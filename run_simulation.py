@@ -19,29 +19,27 @@ All wrongs reserved.
 
 import numpy as np
 import pickle
-import subprocess
 from pathlib import Path
 
-# --- Import from our new, clean package structure ---
-from src.tns_2d.simulation.data_structures import Aircraft, Sensor
-from src.tns_2d.simulation.simulator import Simulator
-from src.tns_2d.graphics.rendering_engine import render_animation
+
+from src.tns_2d.simulation.data_structures  import Aircraft, Sensor
+from src.tns_2d.simulation.simulator        import Simulator
+from src.tns_2d.graphics.rendering_engine   import render_animation
+
 
 # ==============================================================================
 # SECTION 1: HELPER FUNCTIONS AND PATH DEFINITIONS
 # ==============================================================================
 
-def g2mss(arr, g=9.81): return np.asarray(arr) * g
-def mach2mss(arr, Mach=343.0): return np.asarray(arr) * Mach
+def    g2mss(arr,    g =   9.81): return np.asarray(arr) *    g
+def mach2mss(arr, Mach = 343.00): return np.asarray(arr) * Mach
 
-# --- Portable Path Definitions ---
+# --- Path Definitions ---
 ROOT_DIR           = Path(__file__).resolve().parent
 DATA_DIR           = ROOT_DIR   / "data"
 OUTPUT_DIR         = ROOT_DIR   / "output"
 SHAPE_LIBRARY_PATH = DATA_DIR   / "shape_library.pkl"
 MP4_PATH           = OUTPUT_DIR / "simulation_output.mp4"
-
-OUTPUT_DIR.mkdir(exist_ok = True)
 
 # ==============================================================================
 # SECTION 2: SCENARIO CONFIGURATION
@@ -54,6 +52,8 @@ with open(SHAPE_LIBRARY_PATH, 'rb') as f:
 # --- Define Constants ---
 DELTA_T         = 1.0 / 120.0
 SPINE_LENGTH    = 50.0
+R               = SPINE_LENGTH * 0.98
+y_offset        = -0.25 * R 
 
 # --- Aircraft Definitions (Data-Driven) ---
 aircraft_definitions = [
@@ -99,10 +99,6 @@ aircraft_definitions = [
 ]
 
 # --- Sensor Definitions (Data-Driven) ---
-R = SPINE_LENGTH * 0.98
-# Calculate vertical offset to visually center the triangle
-y_offset = -0.25 * R 
-
 sensor_definitions = [
     {
         'identifier'   : 0,
@@ -171,7 +167,8 @@ simulation_config = {
     'max_duration'  : 60.0,  
     'use_dropouts'  : True,
     'use_los'       : True,
-    'use_oor'       : True
+    'use_oor'       : True,
+    'verbose'       : True
 }
 
 # ==============================================================================

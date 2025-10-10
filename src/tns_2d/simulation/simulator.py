@@ -34,7 +34,8 @@ class Simulator:
     """The central orchestrator for the TNS-2D simulation."""
     def __init__(self, aircraft: list[Aircraft], sensors: list[Sensor], shape_library: dict, 
                  global_dt: float, spine_length: float, max_duration: float,
-                 use_dropouts: bool = True, use_los: bool = True, use_oor: bool = True):
+                 use_dropouts: bool = True, use_los: bool = True, use_oor: bool = True,
+                 verbose: bool = True):
         """
         Initializes the Simulator with the complete scenario configuration.
 
@@ -47,7 +48,8 @@ class Simulator:
             max_duration (float)            : Maximum allowed duration for the simulation [s]
             use_dropouts (bool, optional)   : If True, simulates sensor dropouts. 
             use_los (bool, optional)        : If True, simulates Line-of-Sight blockages. 
-            use_oor (bool, optional)        : If True, simulates Out-of-Range conditions. 
+            use_oor (bool, optional)        : If True, simulates Out-of-Range conditions.
+            verbose (bool, optional)        : If True, prints progress information. 
         """
         # --- Core Simulation Objects ---
         self.aircraft       = aircraft
@@ -63,6 +65,7 @@ class Simulator:
         self.use_dropouts   = use_dropouts
         self.use_los        = use_los
         self.use_oor        = use_oor
+        self.verbose        = verbose
 
         # --- Internal State ---
         self.time_grid      = None
@@ -70,21 +73,26 @@ class Simulator:
     def run(self):
         """Executes the full simulation pipeline."""
         t_start_sim = time.time()                                                                       # Start timer
-        print("Simulation started...")
+        if self.verbose:
+            print("Simulation started...")
 
-        print("Step 1: Generating raw trajectories...")
+        if self.verbose:
+            print("Step 1: Generating raw trajectories...")
         for ac in self.aircraft:
             _generate_raw_trajectory(ac, self.max_duration)                                             # Generate trajectories up to the max possible duration
 
-        print("Step 2: Aligning trajectories to master time grid...")
+        if self.verbose:
+            print("Step 2: Aligning trajectories to master time grid...")
         self._align_all_tracks()                                                                        # Align all tracks to the master time grid
 
-        print("Step 3: Generating sensor datasets...")
+        if self.verbose:
+            print("Step 3: Generating sensor datasets...")
         self._generate_all_datasets()                                                                   # Generate sensor datasets         
 
         t_end_sim   = time.time()                                                                       # End timer
         duration    = t_end_sim - t_start_sim                                                           # Calculate simulation duration
-        print(f"Simulation complete in {duration:.2f} seconds.")
+        if self.verbose:
+            print(f"Simulation complete in {duration:.2f} seconds.")
 
     def _align_all_tracks(self):
         """Creates the master time grid based on actual events and aligns all trajectories."""
