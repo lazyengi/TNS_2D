@@ -133,7 +133,7 @@ class Simulator:
 
             # --- Step 4a: Housekeeping ---
             df = pd.DataFrame(ac.aligned_track.T)                                                       # Use a DataFrame for convenient interpolation  
-            df.interpolate(method = 'linear', limit = 1, axis = 0, inplace = True)                      # Linearly interpolate small gaps (up to 1 consecutive NaN)
+            df.interpolate(method = 'linear', limit = 1, axis = 0, inplace = True)                      # Linearly interpolate gaps (up to 1 consecutive NaN)
             ac.aligned_track = df.to_numpy().T                                                          # Convert back to NumPy array
             
             # Normalize the heading angle to ensure it stays within the [-pi, pi) range
@@ -337,7 +337,7 @@ def _generate_detections(aircraft_pose: np.ndarray, aircraft_id: int,
     edge_centers_world  = (edge_starts_world + edge_ends_world) / 2                                     # Edge center points in world frame
     edge_centers_sensor = _roto_translate(edge_centers_world, sensor_pose_vec, inverse=True)            # Edge center points in sensor frame
 
-    if use_oor:                                                                                         # If OOR is enabled...
+    if use_oor:                                                                                         # If OoR is enabled...
         oor_flags = _compute_oor_flags(edge_centers_sensor, sensor.min_range, 
                                         sensor.max_range, sensor.min_bearing, 
                                         sensor.max_bearing)                                             # ...compute Out-of-Range flags
@@ -387,10 +387,11 @@ def _compute_los_flags(aircraft_pose, sensor_pose, los_table):
     # --- Find Grid Point Closest to Sensor  ---
     sensor_pos_ac   = _roto_translate(sensor_pose[:2].reshape(1, -1), 
                                       aircraft_pose, inverse = True)[0]                                 # Sensor position in aircraft frame
-    diffs           = los_table['coords'] - sensor_pos_ac                                               # Differences to all grid points
-    dists           = np.linalg.norm(diffs, axis = 2)                                                   # Euclidean distances to all grid points
-    idx             = np.unravel_index(np.argmin(dists), dists.shape)                                   # Index of closest grid point  
-    return los_table['flags'][idx[0], idx[1], :].astype(int)                                            # Return LoS flags for all edges 
+    # --- Find Closest Point in the Flat Grid ---
+    diffs           = los_table['coords'] - sensor_pos_ac                                               # Differences to all grid points (now a 2D array)
+    dists           = np.linalg.norm(diffs, axis = 1)                                                   # Euclidean distances to all grid points (now a 1D array)
+    idx             = np.argmin(dists)                                                                  # Index of the closest grid point in the flat list
+    return los_table['flags'][idx, :].astype(int)                                                       # Return LoS flags for all edges from the closest point
 
 def _compute_oor_flags(edge_centers_sensor, min_r, max_r, min_b, max_b):
     """Computes Out-of-Range flags based on sensor FoV."""
@@ -405,11 +406,4 @@ def _sample_measurement(edge_idx, edge_starts, edge_ends, sigma_v):
     point_on_edge   = (1 - u) * edge_starts[edge_idx] + u * edge_ends[edge_idx]                         # Interpolate point along the edge 
     noise           = np.random.normal(scale = sigma_v, size = 2)                                       # Add Gaussian noise to the point
     return point_on_edge + noise
-
-
-
-
-
-
-
 

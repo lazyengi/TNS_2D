@@ -17,45 +17,50 @@ All wrongs reserved.
 --------------------------------------------------------------------------------
 """
 
-import numpy as np
-import pickle
+# ==============================================================================
+# SECTION 0: PREAMBLE
+# ==============================================================================
+
+# --- Add the project root to the Python path ---
+import sys
 from pathlib import Path
-
-
-from src.tns_2d.simulation.data_structures  import Aircraft, Sensor
-from src.tns_2d.simulation.simulator        import Simulator
-from src.tns_2d.graphics.rendering_engine   import render_animation
-
-
-# ==============================================================================
-# SECTION 1: HELPER FUNCTIONS AND PATH DEFINITIONS
-# ==============================================================================
-
-def    g2mss(arr,    g =   9.81): return np.asarray(arr) *    g
-def mach2mss(arr, Mach = 343.00): return np.asarray(arr) * Mach
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 # --- Path Definitions ---
-ROOT_DIR           = Path(__file__).resolve().parent
+ROOT_DIR           = Path(__file__).resolve().parent.parent
 DATA_DIR           = ROOT_DIR   / "data"
 OUTPUT_DIR         = ROOT_DIR   / "output"
 SHAPE_LIBRARY_PATH = DATA_DIR   / "shape_library.pkl"
 MP4_PATH           = OUTPUT_DIR / "simulation_output.mp4"
 
-# ==============================================================================
-# SECTION 2: SCENARIO CONFIGURATION
-# ==============================================================================
+# --- Imports ---
+import numpy as np
+import pickle
+from pathlib import Path
+
+from src.tns_2d.simulation.data_structures  import Aircraft, Sensor
+from src.tns_2d.simulation.simulator        import Simulator
+from src.tns_2d.graphics.rendering_engine   import render_animation
+
+# --- Unit Conversion Helpers ---
+def    g2mss(arr,    g =   9.81): return np.asarray(arr) *    g
+def mach2mss(arr, Mach = 343.00): return np.asarray(arr) * Mach
 
 # --- Load Shape Library ---
 with open(SHAPE_LIBRARY_PATH, 'rb') as f:
     shape_library = pickle.load(f)
 
-# --- Define Constants ---
-DELTA_T         = 1.0 / 120.0
-SPINE_LENGTH    = 50.0
-R               = SPINE_LENGTH * 0.98
-y_offset        = -0.25 * R 
+# ==============================================================================
+# SECTION 2: SCENARIO CONFIGURATION
+# ==============================================================================
 
-# --- Aircraft Definitions (Data-Driven) ---
+# --- Constants ---
+DELTA_T         = 1.0 / 120.0                                                               # Simulation time step                  [s]
+SPINE_LENGTH    = 50.0                                                                      # Length of the simulation area spine   [m]       
+R               = SPINE_LENGTH * 0.98                                                       # Sensor network radius                 [m]   
+y_offset        = -0.25 * R                                                                 # Sensor network y-offset               [m]
+
+# --- Aircraft Definitions ---
 aircraft_definitions = [
     {
         'identifier'       : 0,
@@ -64,9 +69,9 @@ aircraft_definitions = [
         'initial_position' : np.array([SPINE_LENGTH, 10.0]),
         'initial_heading'  : np.deg2rad(180),
         'initial_speed'    : mach2mss(0.05),
-        'long_vals'        : g2mss([0.02]),
+        'long_vals'        :    g2mss([ 0.02]),
         'long_times'       : np.array([30.00]),
-        'centr_vals'       : g2mss([-0.50]),
+        'centr_vals'       :    g2mss([-0.50]),
         'centr_times'      : np.array([30.00]),
         'dt'               : DELTA_T
     },
@@ -77,9 +82,9 @@ aircraft_definitions = [
         'initial_position' : np.array([-SPINE_LENGTH, -10.0]),
         'initial_heading'  : np.deg2rad(0),
         'initial_speed'    : mach2mss(0.06),
-        'long_vals'        : g2mss([0.00]),
+        'long_vals'        :    g2mss([ 0.00]),
         'long_times'       : np.array([30.00]),
-        'centr_vals'       : g2mss([0.40]),
+        'centr_vals'       :    g2mss([ 0.40]),
         'centr_times'      : np.array([35.00]),
         'dt'               : DELTA_T
     },
@@ -90,15 +95,15 @@ aircraft_definitions = [
         'initial_position' : np.array([0.0, -SPINE_LENGTH]),
         'initial_heading'  : np.deg2rad(99),
         'initial_speed'    : mach2mss(0.04),
-        'long_vals'        : g2mss([0.03]),
+        'long_vals'        :    g2mss([ 0.03]),
         'long_times'       : np.array([15.00]),
-        'centr_vals'       : g2mss([0.00]),
+        'centr_vals'       :    g2mss([ 0.00]),
         'centr_times'      : np.array([30.00]),
         'dt'               : DELTA_T
     }
 ]
 
-# --- Sensor Definitions (Data-Driven) ---
+# --- Sensor Definitions ---
 sensor_definitions = [
     {
         'identifier'   : 0,
@@ -150,15 +155,13 @@ sensor_definitions = [
     }
 ]
 
-# --- Create Objects from Definitions ---
-aircraft_list = [Aircraft(**params) for params in aircraft_definitions]
-sensor_list   = [  Sensor(**params) for params in   sensor_definitions]
-
 # ==============================================================================
 # SECTION 3: SIMULATION CONFIGURATION
 # ==============================================================================
 
-simulation_config = {
+aircraft_list       = [Aircraft(**params) for params in aircraft_definitions]
+sensor_list         = [  Sensor(**params) for params in   sensor_definitions]
+simulation_config   = {
     'aircraft'      : aircraft_list,
     'sensors'       : sensor_list,
     'shape_library' : shape_library,
@@ -176,8 +179,8 @@ simulation_config = {
 # ==============================================================================
 
 rendering_config = {
-    'aircraft_colors'        : [(1.0, 1.0, 1.0), (0.0, 1.0, 1.0), (1.0, 0.0, 1.0)], #  White,  Cyan,    Magenta
-    'sensor_colors'          : [(1.0, 0.5, 0.0), (0.0, 1.0, 0.0), (0.0, 0.5, 1.0)], # Orange, Green, Light Blue
+    'aircraft_colors'        : [(1.0, 1.0, 1.0), (0.0, 1.0, 1.0), (1.0, 0.0, 1.0)],                             #  White,  Cyan,    Magenta
+    'sensor_colors'          : [(1.0, 0.5, 0.0), (0.0, 1.0, 0.0), (0.0, 0.5, 1.0)],                             # Orange, Green, Light Blue
     'aircraft_censor_levels' : ['null', 'null', 'null'],
     'sensor_censor_levels'   : ['null', 'null', 'null'],
     'alpha'                  : 1.0,
