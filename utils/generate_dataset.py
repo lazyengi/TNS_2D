@@ -375,15 +375,11 @@ if __name__ == "__main__":                                                      
         'pose_distance'             : POSE_DISTANCE,
         'use_random_distance'       : USE_RANDOM_DISTANCE,
         'min_distance'              : MIN_DISTANCE,
-        'delta_t'                   : DELTA_T,
         'use_aircraft_coordinates'  : USE_AIRCRAFT_COORDINATES,
         # Sensor Settings
         'sensor_resolution'         : SENSOR_RESOLUTION,
         'sensor_noise_std'          : SENSOR_NOISE_STD,
-        'use_los'                   : USE_LOS,
-        # Validation Settings
-        'validate_after_generation' : VALIDATE_AFTER_GENERATION,
-        'num_validation_examples'   : NUM_VALIDATION_EXAMPLES
+        'use_los'                   : USE_LOS
     }
 
     full_dataset = {                                                                    # Creates a final dictionary to hold both data and metadata
