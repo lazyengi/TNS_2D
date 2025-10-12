@@ -59,11 +59,11 @@ RUN_VISUAL_VALIDATION      = True                                               
 
 # --- Visibility (LoS) Table Parameters ---
 VISIBILITY_PARAMS = {
-    'angleResolution': np.deg2rad(100.0),                                                       # Angular step size for the grid                            [rad]
-    'rangeResolution': 20.0,                                                                    # Radial step size for the grid                             [m]
-    'maximumRange'   : 100.0,                                                                   # Maximum distance from the aircraft to compute visibility  [m]
-    'minimumRange'   : 2.0,                                                                     # Minimum distance from the aircraft to compute visibility  [m]
-    'rangeDensity'   : 2.0                                                                      # Higher values create more circles closer to the min range
+    'angleResolution': np.deg2rad(10.0),                                                        # Angular step size for the grid                            [rad]
+    'rangeResolution': 10.0,                                                                    # Radial step size for the grid                             [m]
+    'maximumRange'   : 75.0,                                                                    # Maximum distance from the aircraft to compute visibility  [m]
+    'minimumRange'   :  2.0,                                                                    # Minimum distance from the aircraft to compute visibility  [m]
+    'rangeDensity'   :  3.0                                                                     # Higher values create more circles closer to the min range
 }
 
 # ==============================================================================
@@ -231,7 +231,7 @@ def validate_los_grid_coverage(shape_library, visibility_params):
         ax.set_xlabel("x [m]", color = text_color, font = 'monospace')                          # Set the x-axis label
         ax.set_ylabel("y [m]", color = text_color, font = 'monospace')                          # Set the y-axis label
         ax.set_title(f"Shape: {entry['fullName']}", color = text_color, font = 'monospace')     # Set the plot title with the aircraft's name
-        ax.grid(True, linestyle='--', alpha=0.2)                                                # Add a faint grid for reference
+        ax.grid(True, linestyle = '--', alpha = 0.2)                                            # Add a faint grid for reference
         ax.axis([-120, 120, -120, 120])                                                         # Set fixed axis limits for consistent scale
         
         fig.canvas.draw()                                                                       # Redraw the canvas with the new plot
@@ -296,7 +296,7 @@ def validate_shape_library_visuals(shape_library):
 
     bg_color, text_color = (38/255, 55/255, 59/255), 'white'                                    # Define standard colors for the plot's dark theme
     plt.ion()                                                                                   # Turn on interactive mode for Matplotlib
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))                                       # Create a figure with two side-by-side subplots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize = (16, 8))                                     # Create a figure with two side-by-side subplots
     fig.patch.set_facecolor(bg_color)                                                           # Set the background color for the entire figure
     fig.canvas.manager.set_window_title('Shape Library LoS Visualizer')                         # Set the title of the plot window
 
