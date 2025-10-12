@@ -63,9 +63,9 @@ from src.tns_2d.simulation.simulator        import Simulator
 # ==============================================================================
 
 # --- Dataset Settings ---
-USE_RANDOM_DISTANCE         = False                                                     # If True, aircraft distance is randomized in [MIN, 2*POSE_DISTANCE]
+USE_RANDOM_DISTANCE         = False                                                     # If True, aircraft distance is randomized in [MIN, 2 * POSE_DISTANCE]
 USE_AIRCRAFT_COORDINATES    = True                                                      # If True, point clouds are in aircraft frame; if False, in world frame
-NUM_EXAMPLES                = 1000                                                      # Defines the total number of data samples to generate
+NUM_EXAMPLES                = int(1e5)                                                  # Defines the total number of data samples to generate
 POSE_DISTANCE               = 50.0                                                      # The fixed or maximum distance between aircraft and sensor         [m]
 MIN_DISTANCE                = 15.0                                                      # The minimum distance if randomization is used                     [m]
 DELTA_T                     = 1e-6                                                      # Small time step to get an instant snapshot                        [s]
@@ -77,7 +77,7 @@ SENSOR_NOISE_STD            = 0.1                                               
 
 # --- Validation Settings ---
 VALIDATE_AFTER_GENERATION   = True                                                      # Flag to run the validation plotting function after generation
-NUM_VALIDATION_EXAMPLES     = 10                                                        # Number of random examples to show during validation
+NUM_VALIDATION_EXAMPLES     = int(1e2)                                                  # Number of random examples to show during validation
 
 # ==============================================================================
 # SECTION 2: HELPER FUNCTIONS 
@@ -240,7 +240,7 @@ def validate_dataset(dataset_path, shape_library_path):                         
     fig, ax = plt.subplots(figsize=(8,8))                                               # Creates a new figure and axes for plotting with a specific size
     fig.patch.set_facecolor((38/255, 55/255, 59/255))                                   # Sets the background color of the figure to a dark gray-blue
     ax.set_facecolor((38/255, 55/255, 59/255))                                          # Sets the background color of the plot area to match the figure
-    ax.tick_params(colors = 'white')                                                    # Sets the color of the tick marks and labels to white
+    ax.tick_params(colors='white')                                                      # Sets the color of the tick marks and labels to white
     for spine in ax.spines.values():                                                    # Loops through all the spines (the plot borders)
         spine.set_color('white')                                                        # Sets the color of each spine to white
 
@@ -333,14 +333,14 @@ def validate_dataset(dataset_path, shape_library_path):                         
                 markersize = 10, label = 'Sensor Position')
 
         # --- Final Plot Adjustments ---
-        title_text = f"Validation Example {i+1}/{num_to_show} (Shape Index: {shape_idx})" 
-        ax.set_title(title_text, color = 'white', fontname = 'monospace')               # Sets the plot title
+        title_text = f"Validation Example {i+1}/{num_to_show} (Shape Index: {shape_idx})" # Creates the title string
+        ax.set_title(title_text, color='white', fontname='monospace')                   # Sets the plot title
         legend = ax.legend(loc='upper right')                                           # Creates the legend in the top-right corner
         for text in legend.get_texts(): text.set_color('white')                         # Sets the legend text to white
         legend.get_frame().set_facecolor((48/255, 65/255, 69/255))                      # Sets the legend background color
         legend.get_frame().set_edgecolor('white')                                       # Sets the legend border color
         
-        ax.set_aspect('equal', adjustable = 'box')                                      # Enforces a square aspect ratio by adjusting the plot box
+        ax.set_aspect('equal', adjustable='box')                                        # Enforces a square aspect ratio by adjusting the plot box
         plt.pause(0.1)                                                                  # Pauses briefly to allow the plot to render
 
         if not plt.waitforbuttonpress():                                                # Waits for the user to press a key
@@ -364,23 +364,26 @@ if __name__ == "__main__":                                                      
     print(f"Generating {NUM_EXAMPLES} examples for the dataset...")                     # Prints a status message with the number of examples
     dataset = []                                                                        # Initializes an empty list to store the generated data
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)                                       # Creates the output directory if it doesn't exist
-
     for _ in tqdm(range(NUM_EXAMPLES)):                                                 # Starts the main generation loop with a progress bar
         example = generate_single_example(shape_library)                                # Calls the function to generate one example
         if example is not None:                                                         # Checks if the generation was successful
             dataset.append(example)                                                     # If so, appends the example to the dataset list
 
-    metadata = {                                                                        # Creates a dictionary to store metadata
-        'num_examples'              : NUM_EXAMPLES,                                             
-        'pose_distance'             : POSE_DISTANCE,                                              
+    metadata = {                                                                        # Creates a dictionary to store all configuration settings
+        # Dataset Settings
+        'num_examples'              : NUM_EXAMPLES,
+        'pose_distance'             : POSE_DISTANCE,
         'use_random_distance'       : USE_RANDOM_DISTANCE,
         'min_distance'              : MIN_DISTANCE,
-        'delta_t'                   : DELTA_T,                                                  
-        'sensor_resolution'         : SENSOR_RESOLUTION,                                        
-        'sensor_noise_std'          : SENSOR_NOISE_STD,                                         
+        'delta_t'                   : DELTA_T,
+        'use_aircraft_coordinates'  : USE_AIRCRAFT_COORDINATES,
+        # Sensor Settings
+        'sensor_resolution'         : SENSOR_RESOLUTION,
+        'sensor_noise_std'          : SENSOR_NOISE_STD,
         'use_los'                   : USE_LOS,
-        'use_aircraft_coordinates'  : USE_AIRCRAFT_COORDINATES
+        # Validation Settings
+        'validate_after_generation' : VALIDATE_AFTER_GENERATION,
+        'num_validation_examples'   : NUM_VALIDATION_EXAMPLES
     }
 
     full_dataset = {                                                                    # Creates a final dictionary to hold both data and metadata
@@ -388,10 +391,10 @@ if __name__ == "__main__":                                                      
         'data'      : dataset                                                       
     }
 
-    end_time    = time.time()                                                           # Records the ending time of the generation process
-    duration    = end_time - start_time                                                 # Calculates the total duration in seconds
-    minutes     = int(duration // 60)                                                   # Calculates the whole number of minutes
-    seconds     = int(duration % 60)                                                    # Calculates the remaining seconds
+    end_time        = time.time()                                                       # Records the ending time of the generation process
+    duration        = end_time - start_time                                             # Calculates the total duration in seconds
+    minutes         = int(duration // 60)                                               # Calculates the whole number of minutes
+    seconds         = int(duration % 60)                                                # Calculates the remaining seconds
     summary_message = f"Generated {len(dataset)} examples in {minutes}m {seconds}s."
     print(summary_message)                                                              # Prints the total time taken
 
