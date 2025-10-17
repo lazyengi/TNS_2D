@@ -5,18 +5,18 @@ generate_dataset.py
 
 This script generates a dataset for a machine learning classification task.
 
-The goal is to train a model that can infer an aircraft's shape index (its
-class) based solely on a sensor point cloud of that aircraft.
+The goal is to train a model that can infer an extended object's shape index (its
+class) based solely on a sensor point cloud of that extended object.
 
 To do this, the script iterates a specified number of times. In each iteration:
-1.  A random aircraft shape index is chosen uniformly.
-2.  The aircraft's position is chosen uniformly from a circle (fixed distance)
+1.  A random extended object shape index is chosen uniformly.
+2.  The extended object's position is chosen uniformly from a circle (fixed distance)
     or a ring (random distance) around the sensor.
-3.  The aircraft's heading is chosen uniformly between 0 and 2 * pi radians.
+3.  The extended object's heading is chosen uniformly between 0 and 2 * pi radians.
 4.  A single sensor, configured with specific noise and resolution, generates a
     point cloud at the origin.
 5.  Based on a configuration flag, the point cloud is either kept in world
-    coordinates or transformed into the aircraft's local coordinate system.
+    coordinates or transformed into the extended object's local coordinate system.
 6.  The final data example, including relevant metadata, is saved.
 
 The final dataset is saved as a pickled dictionary to be used in a separate model
@@ -55,7 +55,7 @@ import time
 import matplotlib.pyplot as plt                         
 from matplotlib.patches import Polygon, Circle
 
-from src.tns_2d.simulation.data_structures  import Aircraft, Sensor                     
+from src.tns_2d.simulation.data_structures  import ExtendedObject, Sensor                     
 from src.tns_2d.simulation.simulator        import Simulator    
 
 # ==============================================================================
@@ -63,17 +63,17 @@ from src.tns_2d.simulation.simulator        import Simulator
 # ==============================================================================
 
 # --- Dataset Settings ---
-USE_RANDOM_DISTANCE         = False                                                     # If True, aircraft distance is randomized in [MIN, 2 * POSE_DISTANCE]
-USE_AIRCRAFT_COORDINATES    = True                                                      # If True, point clouds are in aircraft frame; if False, in world frame
-NUM_EXAMPLES                = int(1e5)                                                  # Defines the total number of data samples to generate
-POSE_DISTANCE               = 50.0                                                      # The fixed or maximum distance between aircraft and sensor         [m]
-MIN_DISTANCE                = 15.0                                                      # The minimum distance if randomization is used                     [m]
-DELTA_T                     = 1e-6                                                      # Small time step to get an instant snapshot                        [s]
+USE_RANDOM_DISTANCE               = False                                               # If True, extended object distance is randomized in [MIN, 2 * POSE_DISTANCE]
+USE_EXTENDED_OBJECT_COORDINATES   = True                                                # If True, point clouds are in extended object frame; if False, in world frame
+NUM_EXAMPLES                      = int(1e6)                                            # Defines the total number of data samples to generate
+POSE_DISTANCE                     = 50.0                                                # The fixed or maximum distance between extended object and sensor  [m]
+MIN_DISTANCE                      = 15.0                                                # The minimum distance if randomization is used                     [m]
+DELTA_T                           = 1e-6                                                # Small time step to get an instant snapshot                        [s]
 
 # --- Sensor Imperfection Settings ---
-USE_LOS                     = True                                                      # Toggles Line-of-Sight simulation (self-occlusions) on or off
-SENSOR_RESOLUTION           = 2.0                                                       # Number of detections per unit length of an aircraft's edge        [m^-1]
-SENSOR_NOISE_STD            = 0.1                                                       # Standard deviation of Gaussian noise added to measurements        [m]
+USE_LOS                           = True                                                # Toggles Line-of-Sight simulation (self-occlusions) on or off
+SENSOR_RESOLUTION                 = 2.0                                                 # Number of detections per unit length of an extended object's edge [m^-1]
+SENSOR_NOISE_STD                  = 0.1                                                 # Standard deviation of Gaussian noise added to measurements        [m]
 
 # --- Validation Settings ---
 VALIDATE_AFTER_GENERATION   = True                                                      # Flag to run the validation plotting function after generation
@@ -83,47 +83,47 @@ NUM_VALIDATION_EXAMPLES     = int(1e2)                                          
 # SECTION 2: HELPER FUNCTIONS 
 # ==============================================================================
 
-def apply_inverse_roto_translation(points_world, aircraft_position, aircraft_heading):     
-    """Transforms points from the world frame to the aircraft's local frame."""
+def apply_inverse_roto_translation(points_world, extended_object_position, extended_object_heading):     
+    """Transforms points from the world frame to the extended object's local frame."""
     points_world_2d = np.atleast_2d(points_world)                                       # Ensures the input points array is at least 2D
 
     # Translation 
-    translated_points = points_world_2d - aircraft_position                             # Step 1: Translates points by subtracting the aircraft's position
+    translated_points = points_world_2d - extended_object_position                      # Step 1: Translates points by subtracting the extended object's position
 
     # Rotation matrix construction
-    h               = aircraft_heading                                                  # Step 2: Prepares for rotation by getting the heading
+    h               = extended_object_heading                                           # Step 2: Prepares for rotation by getting the heading
     cos_h, sin_h    = np.cos(h), np.sin(h)                                              # Calculates cosine and sine of the heading for the rotation matrix
-    inv_rot_matrix  = np.array([[cos_h, sin_h],                                         # Defines the 2D inverse rotation matrix
+    inv_rot_matrix  = np.array([[  cos_h, sin_h],                                       # Defines the 2D inverse rotation matrix
                                  [-sin_h, cos_h]])
     
     # Inverse roto-translation
-    points_aircraft = np.dot(inv_rot_matrix, translated_points.T).T                     # Applies the inverse rotation to the translated points
+    points_extended_object = np.dot(inv_rot_matrix, translated_points.T).T              # Applies the inverse rotation to the translated points
 
-    return points_aircraft.squeeze() if points_world.ndim == 1 else points_aircraft     # Returns the transformed points, squeezing to 1D if the input was 1D
+    return points_extended_object.squeeze() if points_world.ndim == 1 else points_extended_object     # Returns the transformed points, squeezing to 1D if the input was 1D
 
-def apply_forward_roto_translation(points_local, aircraft_position, aircraft_heading):
-    """Transforms points from the aircraft's local frame to the world frame."""
+def apply_forward_roto_translation(points_local, extended_object_position, extended_object_heading):
+    """Transforms points from the extended object's local frame to the world frame."""
     points_local_2d = np.atleast_2d(points_local)                                       # Ensures the input points array is at least 2D
     
     # Rotation matrix construction
-    h             = aircraft_heading                                                    # Step 1: Prepares for rotation by getting the heading
+    h             = extended_object_heading                                             # Step 1: Prepares for rotation by getting the heading
     cos_h, sin_h  = np.cos(h), np.sin(h)                                                # Calculates cosine and sine for the rotation matrix
     rot_matrix    = np.array([[cos_h, -sin_h],                                          # Defines the 2D forward rotation matrix
                               [sin_h, cos_h]])
 
     # Forward roto-translation
     rotated_points = np.dot(rot_matrix, points_local_2d.T).T                            # Applies the forward rotation
-    points_world   = rotated_points + aircraft_position                                 # Translates the rotated points to the aircraft's world position
+    points_world   = rotated_points + extended_object_position                          # Translates the rotated points to the extended object's world position
     
     return points_world.squeeze() if points_local.ndim == 1 else points_world           # Returns the transformed points
 
 def generate_single_example(shape_library):                                       
     """Generates a single, complete data example for the dataset."""
-    # STEP 1. Randomly select an aircraft shape
-    num_shapes          = len(shape_library)                                            # Number of available aircraft shapes
+    # STEP 1. Randomly select an extended object shape
+    num_shapes          = len(shape_library)                                            # Number of available extended object shapes
     random_shape_idx    = np.random.randint(0, num_shapes)                              # Selects a shape index uniformly at random
 
-    # STEP 2. Position the aircraft (fixed or random distance on a circle/ring)
+    # STEP 2. Position the extended object (fixed or random distance on a circle/ring)
     random_angle = np.random.uniform(0, 2 * np.pi)                                      # Sample a random angle for the position
 
     if USE_RANDOM_DISTANCE:
@@ -136,19 +136,19 @@ def generate_single_example(shape_library):
         # Use a fixed distance (uniform on the circle's circumference)
         radius = POSE_DISTANCE
 
-    aircraft_position = np.array([radius * np.cos(random_angle), 
+    extended_object_position = np.array([radius * np.cos(random_angle), 
                                   radius * np.sin(random_angle)])                       # Calculate the (x, y) position
     
     # STEP 3: Selects a random heading between 0 and 2*pi radians
-    aircraft_heading = np.random.uniform(0, 2 * np.pi)                            
+    extended_object_heading = np.random.uniform(0, 2 * np.pi)                            
 
     # STEP 4. Configure and run a simulation to generate the point cloud
-    aircraft = Aircraft(                                                                # Creates an Aircraft              
+    extended_object = ExtendedObject(                                                   # Creates an ExtendedObject              
         identifier          = 0,                                                       
         shape_idx           = random_shape_idx,                                 
         t_init              = 0.0,                                              
-        initial_position    = aircraft_position,                                
-        initial_heading     = aircraft_heading,                                 
+        initial_position    = extended_object_position,                                
+        initial_heading     = extended_object_heading,                                 
         initial_speed       = 0,                                                
         long_vals           = np.array([0]),                                    
         long_times          = np.array([DELTA_T]),                              
@@ -159,6 +159,7 @@ def generate_single_example(shape_library):
 
     sensor = Sensor(                                                                    # Creates a Sensor 
         identifier          = 0,                                                
+        generation_mode     = "contour",    
         position            = np.array([0.0, 0.0]),                             
         heading             = 0.0,                                              
         max_range           = 1000.0,                                           
@@ -175,16 +176,16 @@ def generate_single_example(shape_library):
     )
 
     simulator = Simulator(                                                              # Initializes the Simulator with the scenario objects
-        aircraft        = [aircraft],                                           
-        sensors         = [sensor],                                             
-        shape_library   = shape_library,                                        
-        spine_length    = 60.0,                                                 
-        global_dt       = DELTA_T,                                              
-        max_duration    = DELTA_T * 2,                                          
-        use_dropouts    = False,                                                
-        use_los         = USE_LOS,                                              
-        use_oor         = False,                                                
-        verbose         = False                                                 
+        extended_objects = [extended_object],                                           
+        sensors          = [sensor],                                             
+        shape_library    = shape_library,                                        
+        spine_length     = 60.0,                                                 
+        global_dt        = DELTA_T,                                              
+        max_duration     = DELTA_T * 2,                                          
+        use_dropouts     = False,                                                
+        use_los          = USE_LOS,                                              
+        use_oor          = False,                                                
+        verbose          = False                                                 
     )
     simulator.run()                                                                     # Executes the simulation
 
@@ -194,27 +195,27 @@ def generate_single_example(shape_library):
 
     point_cloud_world = sensor_dataset['measurements'][0]                               # Retrieves the point cloud from the first measurement scan
     
-    if USE_AIRCRAFT_COORDINATES:
-        # STEPS 5 & 6. Express point cloud and sensor position in aircraft coordinates
-        point_cloud_aircraft = apply_inverse_roto_translation(
-            point_cloud_world, aircraft_position, aircraft_heading
+    if USE_EXTENDED_OBJECT_COORDINATES:
+        # STEPS 5 & 6. Express point cloud and sensor position in extended object coordinates
+        point_cloud_extended_object = apply_inverse_roto_translation(
+            point_cloud_world, extended_object_position, extended_object_heading
         )
-        sensor_pos_ac = apply_inverse_roto_translation(
-            np.array([0.0, 0.0]), aircraft_position, aircraft_heading
+        sensor_pos_eoc = apply_inverse_roto_translation(
+            np.array([0.0, 0.0]), extended_object_position, extended_object_heading
         )
         return {
-            'point_cloud'   : point_cloud_aircraft,
-            'shape_idx'     : random_shape_idx,
-            'sensor_pos_ac' : sensor_pos_ac
+            'point_cloud'    : point_cloud_extended_object,
+            'shape_idx'      : random_shape_idx,
+            'sensor_pos_eoc' : sensor_pos_eoc
         }
     else:
         # Keep all data in world coordinates
         return {
-            'point_cloud'       : point_cloud_world,
-            'shape_idx'         : random_shape_idx,
-            'aircraft_position' : aircraft_position,
-            'aircraft_heading'  : aircraft_heading,
-            'sensor_position'   : np.array([0.0, 0.0])
+            'point_cloud'               : point_cloud_world,
+            'shape_idx'                 : random_shape_idx,
+            'extended_object_position'  : extended_object_position,
+            'extended_object_heading'   : extended_object_heading,
+            'sensor_position'           : np.array([0.0, 0.0])
         }
 
 def validate_dataset(dataset_path, shape_library_path):                                 # Defines the function for visually validating the dataset
@@ -228,9 +229,9 @@ def validate_dataset(dataset_path, shape_library_path):                         
     with open(shape_library_path, 'rb') as f:                                           # Opens the shape library file in binary read mode
         shape_library = pickle.load(f)                                                  # Loads the pickled shape library from the file
     
-    metadata          = full_dataset['metadata']                                        # Extracts the metadata dictionary
-    dataset           = full_dataset['data']                                            # Extracts the list of data examples from the loaded dictionary
-    in_aircraft_frame = metadata.get('use_aircraft_coordinates', True)                  # Checks the coordinate system from metadata
+    metadata                 = full_dataset['metadata']                                 # Extracts the metadata dictionary
+    dataset                  = full_dataset['data']                                     # Extracts the list of data examples from the loaded dictionary
+    in_extended_object_frame = metadata.get('use_extended_object_coordinates', True)    # Checks the coordinate system from metadata
     
     # --- Randomly Sample Examples to Show ---
     num_to_show       = min(NUM_VALIDATION_EXAMPLES, len(dataset))                      # Determines how many examples to show (up to the configured max)
@@ -247,14 +248,14 @@ def validate_dataset(dataset_path, shape_library_path):                         
     for i, example in enumerate(selected_examples):                                     # Loops through the randomly selected examples
         ax.cla()                                                                        # Clears the axes to prepare for the next plot
 
-        shape_idx       = example['shape_idx']
-        shape_matrix    = shape_library[shape_idx]['shapeMatrix']
-        base_vertices   = shape_matrix[:2, :].T
-        pc              = example['point_cloud']
+        shape_idx          = example['shape_idx']
+        contourShapeMatrix = shape_library[shape_idx]['contourShapeMatrix']
+        base_vertices      = contourShapeMatrix[:2, :].T
+        pc                 = example['point_cloud']
 
-        if in_aircraft_frame:
-            # --- PLOT IN AIRCRAFT COORDINATES ---
-            sensor_pos = example['sensor_pos_ac']                                       # Unpacks the sensor position from the example
+        if in_extended_object_frame:
+            # --- PLOT IN EXTENDED_OBJECT COORDINATES ---
+            sensor_pos = example['sensor_pos_eoc']                                      # Unpacks the sensor position from the example
             
             # Plot underlying geometry based on distance setting
             if metadata.get('use_random_distance', False):                              # Checks if random distance was used
@@ -267,36 +268,37 @@ def validate_dataset(dataset_path, shape_library_path):                         
                 ax.add_patch(Circle((0, 0), POSE_DISTANCE, color = 'c',                 # Adds a dashed circle for the fixed distance case
                                     fill = False, linestyle = '--', zorder = 0))
 
-            # Plot aircraft shape
-            ax.add_patch(Polygon(base_vertices,                                         # Creates a transparent polygon for the aircraft's body
+            # Plot extended object shape
+            ax.add_patch(Polygon(base_vertices,                                         # Creates a transparent polygon for the extended object's body
                                  facecolor='white', alpha = 0.1, zorder = 1))
-            for edge_idx in range(shape_matrix.shape[1]):                               # Loops through each edge of the aircraft shape
-                start, end = shape_matrix[:2, edge_idx], shape_matrix[2:4, edge_idx]    # Gets the start and end points of the current edge
+            for edge_idx in range(contourShapeMatrix.shape[1]):                         # Loops through each edge of the extended object shape
+                start = contourShapeMatrix[ :2, edge_idx]                               # Gets the start points of the current edge
+                end   = contourShapeMatrix[2:4, edge_idx]                               # Gets the end points of the current edge
                 ax.plot([start[0], end[0]], [start[1], end[1]], 'r-',                   # Plots the edge in red
                         lw = 1.0, zorder = 2, 
                         label = 'True Shape' if edge_idx == 0 else "")                  # Adds a label only to the first edge to avoid duplicates
 
-            ax.set_xlabel("X coordinate (Aircraft Frame) [m]",                          # Sets the x-axis label
+            ax.set_xlabel("X coordinate (Extended Object Frame) [m]",                   # Sets the x-axis label
                           color = 'white', fontname = 'monospace')
-            ax.set_ylabel("Y coordinate (Aircraft Frame) [m]",                          # Sets the y-axis label
+            ax.set_ylabel("Y coordinate (Extended Object Frame) [m]",                   # Sets the y-axis label
                           color = 'white', fontname = 'monospace')
-            ax.set_xlim([-60, 60]); ax.set_ylim([-60, 60])                              # Sets fixed axis limits for the aircraft frame view
+            ax.set_xlim([-60, 60]); ax.set_ylim([-60, 60])                              # Sets fixed axis limits for the extended object frame view
         
         else:
             # --- PLOT IN WORLD COORDINATES ---
-            ac_pos     = example['aircraft_position']                                   # Unpacks the aircraft's world position
-            ac_heading = example['aircraft_heading']                                    # Unpacks the aircraft's world heading
+            eo_pos     = example['extended_object_position']                            # Unpacks the extended object's world position
+            eo_heading = example['extended_object_heading']                             # Unpacks the extended object's world heading
             sensor_pos = example['sensor_position']                                     # Unpacks the sensor's world position
             
-            # Roto-translate aircraft shape to its world position
-            world_vertices = apply_forward_roto_translation(base_vertices,              # Calculates the world coordinates of the aircraft's vertices
-                                                            ac_pos, ac_heading)
+            # Roto-translate extended object shape to its world position
+            world_vertices = apply_forward_roto_translation(base_vertices,              # Calculates the world coordinates of the extended object's vertices
+                                                            eo_pos, eo_heading)
             
             # --- Intelligent Axis Scaling ---
             all_plot_points = [sensor_pos]                                              # Initializes a list of all points to consider for scaling
             if pc.size > 0:                                                             # Checks if there is a point cloud
                 all_plot_points.append(pc)                                              # Adds the point cloud to the list
-            all_plot_points.append(world_vertices)                                      # Adds the aircraft's vertices to the list
+            all_plot_points.append(world_vertices)                                      # Adds the extended object's vertices to the list
             
             all_points_np = np.vstack(all_plot_points)                                  # Stacks all points into a single NumPy array
 
@@ -312,7 +314,7 @@ def validate_dataset(dataset_path, shape_library_path):                         
             ax.set_xlim(center[0] - half_size, center[0] + half_size)                   # Sets the x-axis limits to be centered on the data
             ax.set_ylim(center[1] - half_size, center[1] + half_size)                   # Sets the y-axis limits to match, creating a square view
 
-            ax.add_patch(Polygon(world_vertices, facecolor = 'white',                   # Adds the aircraft's polygon to the world plot
+            ax.add_patch(Polygon(world_vertices, facecolor = 'white',                   # Adds the extended object's polygon to the world plot
                                  alpha = 0.1, zorder = 1))
             for edge_idx in range(world_vertices.shape[0]):                             # Loops through the vertices to draw the edges
                 start = world_vertices[edge_idx]                                        # Gets the current vertex
@@ -371,15 +373,15 @@ if __name__ == "__main__":                                                      
 
     metadata = {                                                                        # Creates a dictionary to store all configuration settings
         # Dataset Settings
-        'num_examples'              : NUM_EXAMPLES,
-        'pose_distance'             : POSE_DISTANCE,
-        'use_random_distance'       : USE_RANDOM_DISTANCE,
-        'min_distance'              : MIN_DISTANCE,
-        'use_aircraft_coordinates'  : USE_AIRCRAFT_COORDINATES,
+        'num_examples'                      : NUM_EXAMPLES,
+        'pose_distance'                     : POSE_DISTANCE,
+        'use_random_distance'               : USE_RANDOM_DISTANCE,
+        'min_distance'                      : MIN_DISTANCE,
+        'use_extended_object_coordinates'   : USE_EXTENDED_OBJECT_COORDINATES,
         # Sensor Settings
-        'sensor_resolution'         : SENSOR_RESOLUTION,
-        'sensor_noise_std'          : SENSOR_NOISE_STD,
-        'use_los'                   : USE_LOS
+        'sensor_resolution'                 : SENSOR_RESOLUTION,
+        'sensor_noise_std'                  : SENSOR_NOISE_STD,
+        'use_los'                           : USE_LOS
     }
 
     full_dataset = {                                                                    # Creates a final dictionary to hold both data and metadata
@@ -400,4 +402,6 @@ if __name__ == "__main__":                                                      
 
     if VALIDATE_AFTER_GENERATION:                                                       # Checks if the validation flag is set to True
         validate_dataset(DATASET_PATH, SHAPE_LIBRARY_PATH)                              # If so, calls the validation function
+
+
 

@@ -4,20 +4,20 @@ generate_shape_library.py
 ================================================================================
 
 This utility script is responsible for generating the 'shape_library.pkl' file,
-which serves as the central database of aircraft shapes for the TNS-2D simulator.
+which serves as the central database of extended object shapes for the TNS-2D simulator.
 
-The script reads raw vertex data from a specified HDF5 file. For each entry in
-the file, it processes the vertices to construct a standardized 'shapeMatrix'. 
-Optionally, it can also compute a detailed Line-of-Sight (LoS) visibility
-table, which pre-calculates which parts of the aircraft are visible from a grid
-of points surrounding it.
+The script reads raw vertex data from a specified HDF5 file. For each entry,
+it processes the vertices to construct a standardized 'contourShapeMatrix' and a
+triangulated 'surfaceShapeMatrix'. Optionally, it can also compute a detailed
+Line-of-Sight (LoS) visibility table.
 
 The final output is a pickled list of dictionaries, where each dictionary
-represents a single aircraft shape and its associated data.
+represents a single extended object shape and its associated data, including both
+contour and surface representations.
 
 --------------------------------------------------------------------------------
 Author  : Matteo Tesori (matteotesori@gmail.com)
-Date    : 2025-10-11
+Date    : 2025-10-17
 All wrongs reserved.
 --------------------------------------------------------------------------------
 """
@@ -39,30 +39,32 @@ import time
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+import triangle as tr
 
 # --- Path Definitions ---
 ROOT_DIR           = Path(__file__).resolve().parent.parent
 DATA_DIR           = ROOT_DIR / "data"
-H5_INPUT_PATH      = DATA_DIR / "raw_shape_library.h5"
-SHAPE_LIBRARY_PATH = DATA_DIR / "shape_library.pkl"
+H5_INPUT_PATH      = DATA_DIR / "raw_aircraft_shape_library.h5"
+SHAPE_LIBRARY_PATH = DATA_DIR / "aircraft_shape_library.pkl"
 
 # ==============================================================================
 # SECTION 1: CONFIGURATION
 # ==============================================================================
 
 # --- Generation Flags ---
-GENERATE_VISIBILITY_TABLES = True                                                               # If True, computes LoS tables for each shape
-FORCE_REGENERATION         = True                                                               # If False, loads existing library for validation
-RUN_GRID_VALIDATION        = True                                                               # If True, validates the LoS grid point coverage before generation
-RUN_PERFORMANCE_VALIDATION = True                                                               # If True, runs a performance check after generation
-RUN_VISUAL_VALIDATION      = True                                                               # If True, runs a visual LoS check after generation
+GENERATE_VISIBILITY_TABLES    = True                                                            # If True, computes LoS tables for each shape
+FORCE_REGENERATION            = True                                                            # If False, loads existing library for validation
+RUN_TRIANGULATION_VALIDATION  = True                                                            # If True, validates the generated triangulation for each shape
+RUN_GRID_VALIDATION           = True                                                            # If True, validates the LoS grid point coverage before generation
+RUN_PERFORMANCE_VALIDATION    = True                                                            # If True, runs a performance check after generation
+RUN_VISUAL_VALIDATION         = True                                                            # If True, runs a visual LoS check after generation
 
 # --- Visibility (LoS) Table Parameters ---
 VISIBILITY_PARAMS = {
-    'angleResolution': np.deg2rad(10.0),                                                        # Angular step size for the grid                            [rad]
-    'rangeResolution': 10.0,                                                                    # Radial step size for the grid                             [m]
-    'maximumRange'   : 75.0,                                                                    # Maximum distance from the aircraft to compute visibility  [m]
-    'minimumRange'   :  2.0,                                                                    # Minimum distance from the aircraft to compute visibility  [m]
+    'angleResolution': np.deg2rad(10.0),                                                        # Angular step size for the grid                                   [rad]
+    'rangeResolution': 10.0,                                                                    # Radial step size for the grid                                    [m]
+    'maximumRange'   : 75.0,                                                                    # Maximum distance from the extended object to compute visibility  [m]
+    'minimumRange'   :  2.0,                                                                    # Minimum distance from the extended object to compute visibility  [m]
     'rangeDensity'   :  3.0                                                                     # Higher values create more circles closer to the min range
 }
 
@@ -70,7 +72,7 @@ VISIBILITY_PARAMS = {
 # SECTION 2: HELPER FUNCTIONS
 # ==============================================================================
 
-#--- Shape Matrix Generation ---
+#--- Contour Shape Matrix Generation ---
 
 def unfold(foldedVertices):
     """Unfolds a symmetrical set of vertices defined by one half."""
@@ -101,13 +103,39 @@ def shapeVector(unfoldedVertices, ears):
         tildeSv = np.vstack((tildeSv, edgeSlice))                                               # Append the current edge's coordinates to the main vector
     return tildeSv                                                                              # Return the complete vector of edge coordinates
 
-def shapeMatrixGenerator(foldedVertices):
-    """Generates the final 5xN shape matrix from folded vertex data."""
-    unfoldedVertices    = unfold(foldedVertices)                                                # Step 1: Create the full symmetrical set of vertices
-    tildeSv             = shapeVector(unfoldedVertices, circularClip(unfoldedVertices))         # Step 2: Define the edges and format them
-    S4                  = np.asarray(tildeSv).reshape(-1, 4).T                                  # Step 3: Reshape into a 4xN matrix [x1, y1, x2, y2] for each edge
-    d                   = np.sqrt((S4[2] - S4[0])**2 + (S4[3] - S4[1])**2)                      # Step 4: Calculate the length of each edge
-    return np.vstack((S4, d))                                                                   # Step 5: Stack the edge lengths to create the final 5xN matrix
+def contourShapeMatrixGenerator(foldedVertices):
+    """Generates the final 5xN contour shape matrix from folded vertex data."""
+    unfoldedVertices    = unfold(foldedVertices)                                                # Create the full symmetrical set of vertices
+    tildeSv             = shapeVector(unfoldedVertices, circularClip(unfoldedVertices))         # Define the edges and format them
+    S4                  = np.asarray(tildeSv).reshape(-1, 4).T                                  # Reshape into a 4xN matrix [x1, y1, x2, y2] for each edge
+    d                   = np.sqrt((S4[2] - S4[0])**2 + (S4[3] - S4[1])**2)                      # Calculate the length of each edge
+    return np.vstack((S4, d))                                                                   # Stack the edge lengths to create the final 5xN matrix
+
+def contourShapeMatrixGenerator(contourShapeMatrix: np.ndarray) -> np.ndarray:
+    """Converts an edge-based contour matrix into a triangle-based surface matrix."""
+    vertices = contourShapeMatrix[:2, :].T                                                      # Extract the unique vertices from the contour matrix   
+    if vertices.shape[0] < 3: return np.empty((7, 0))                                           # Return empty if less than 3 vertices (no surface possible)
+
+    num_vertices = vertices.shape[0]                                                            # Get the number of unique vertices       
+    segments     = np.array([[i, (i + 1) % num_vertices] for i in range(num_vertices)])         # Define segments connecting each vertex in a closed loop
+    poly_data    = {'vertices': vertices, 'segments': segments}                                 # Prepare data for triangulation
+    
+    triangulation = tr.triangulate(poly_data, 'p')                                              # Perform triangulation using the 'triangle' library
+    tri_vertices, simplices = triangulation['vertices'], triangulation['triangles']             # Extract the triangulated vertices and simplices
+    
+    surfaceShapeMatrix = np.zeros((7, len(simplices)))                                          # Initialize the surface shape matrix
+    for i, simplex in enumerate(simplices):
+        v0                         = tri_vertices[simplex[0]]                                   # Get the vertices of the triangle
+        v1                         = tri_vertices[simplex[1]]
+        v2                         = tri_vertices[simplex[2]]
+        surfaceShapeMatrix[0:2, i] = v0                                                         # Store the vertices in the matrix
+        surfaceShapeMatrix[2:4, i] = v1 
+        surfaceShapeMatrix[4:6, i] = v2
+        surfaceShapeMatrix[6, i]   = 0.5 * abs(v0[0] * (v1[1] - v2[1]) +                        # Calculate the area of the triangle
+                                               v1[0] * (v2[1] - v0[1]) + 
+                                               v2[0] * (v0[1] - v1[1]))
+        
+    return surfaceShapeMatrix
 
 # --- Visibility (LoS) Table Generation ---
 
@@ -154,31 +182,33 @@ def segments_intersect_point(p1, p2, q1, q2):
         return p1 + t*r                                                                         # If it does, calculate and return the intersection point
     return None                                                                                 # Otherwise, the segments do not intersect
 
-def compute_edge_LoS_flag(sensor_pos, edge_idx, shapeMatrix):
+def compute_edge_LoS_flag(sensor_pos, edge_idx, contourShapeMatrix):
     """(Optimized) Computes if a single edge is visible from a sensor position."""
-    n_edges     = shapeMatrix.shape[1]                                                          # Get the total number of edges in the shape
-    edge_center = (shapeMatrix[:2, edge_idx] + shapeMatrix[2:4, edge_idx]) / 2                  # Calculate the center point of the target edge
+    n_edges     = contourShapeMatrix.shape[1]                                                   # Get the total number of edges in the shape
+    edge_center = (contourShapeMatrix[:2, edge_idx] + contourShapeMatrix[2:4, edge_idx]) / 2    # Calculate the center point of the target edge
 
     for j in range(n_edges):                                                                    # Iterate through all other edges to check for occlusion
         if j == edge_idx: continue                                                              # Skip checking the edge against itself
         if segments_intersect_point(sensor_pos, edge_center, 
-                                    shapeMatrix[:2, j], shapeMatrix[2:4, j]) is not None:       # Check if LoS to the target edge is blocked by another edge
+                                    contourShapeMatrix[:2, j], 
+                                    contourShapeMatrix[2:4, j]) is not None:                    # Check if LoS to the target edge is blocked by another edge
             return 0                                                                            # If blocked, return a visibility flag of 0
     return 1                                                                                    # If no intersections are found, the edge is visible; return 1
 
-def compute_all_LoS_flags(sensor_position, aircraft_shapeMatrix):
-    """Computes visibility flags for all edges of an aircraft from a given point."""
-    n_edges = aircraft_shapeMatrix.shape[1]                                                     # Get the total number of edges
+def compute_all_LoS_flags(sensor_position, extended_object_contourShapeMatrix):
+    """Computes visibility flags for all edges of an extended object from a given point."""
+    n_edges = extended_object_contourShapeMatrix.shape[1]                                       # Get the total number of edges
     flags   = np.zeros(n_edges, dtype=int)                                                      # Initialize an array of flags, one for each edge
     for i in range(n_edges):                                                                    # Iterate through each edge
-        flags[i] = compute_edge_LoS_flag(sensor_position, i, aircraft_shapeMatrix)              # Compute the visibility flag for the current edge and store it
+        flags[i] = compute_edge_LoS_flag(sensor_position, i, 
+                                         extended_object_contourShapeMatrix)                    # Compute the visibility flag for the current edge and store it
     return flags                                                                                # Return the complete array of visibility flags
 
-def generate_visibility_table(shapeMatrix, visibilityParameters):
+def generate_visibility_table(contourShapeMatrix, visibilityParameters):
     """Generates a lookup table for Line-of-Sight (LoS) visibility."""
-    grid_points_flat = _generate_grid_points(visibilityParameters)                              # Generate the grid of points around the aircraft
+    grid_points_flat = _generate_grid_points(visibilityParameters)                              # Generate the grid of points around the extended object
     n_points         = grid_points_flat.shape[0]                                                # Get the total number of grid points
-    nEdges           = shapeMatrix.shape[1]                                                     # Get the number of edges in the aircraft shape
+    nEdges           = contourShapeMatrix.shape[1]                                              # Get the number of edges in the extended object shape
 
     LoSTable = {                                                                                # Initialize the LoSTable dictionary structure
         'coords' : grid_points_flat,                                                            # To store the flat array of grid point coordinates
@@ -188,12 +218,74 @@ def generate_visibility_table(shapeMatrix, visibilityParameters):
 
     for i in tqdm(range(n_points), desc = "  Generating LoS table", leave = False):             # Iterate through each grid point with a progress bar
         currentPoint             = grid_points_flat[i]                                          # Get the coordinates of the current grid point
-        LoSTable['flags'][i, :]  = compute_all_LoS_flags(currentPoint, shapeMatrix[:4, :])      # Compute and store visibility flags for all edges from this point
+        LoSTable['flags'][i, :]  = compute_all_LoS_flags(currentPoint, 
+                                                         contourShapeMatrix[:4, :])             # Compute and store visibility flags for all edges from this point
 
     return LoSTable                                                                             # Return the completed LoS table
 
 # ==============================================================================
-# SECTION 3: GRID COVERAGE VALIDATION
+# SECTION 3: TRIANGULATION VALIDATION
+# ==============================================================================
+
+def validate_triangulation_visuals(shape_library):
+    """Interactively plots the triangulation over each shape to validate correctness."""
+    print("-" * 60)                                                                             # Print a separator for clean output
+    print("Starting Triangulation pre-validation...")                                           # Announce the start of the validation
+    print("Press any key to cycle through the shapes.")                                         # Provide user instructions
+
+    bg_color    = (38/255, 55/255, 59/255)                                                      # Define the background color for the dark theme
+    text_color  = 'white'                                                                       # Define the text color for the dark theme
+    plt.ion()                                                                                   # Turn on interactive mode for Matplotlib
+    fig, ax = plt.subplots(figsize = (8, 8))                                                    # Create a new figure and axis for plotting
+    fig.patch.set_facecolor(bg_color)                                                           # Set the figure's background color
+    ax.set_facecolor(bg_color)                                                                  # Set the axis' background color
+    fig.canvas.manager.set_window_title('Triangulation Visualizer')                             # Set the title of the plot window
+    ax.tick_params(colors = text_color)                                                         # Set the color of the tick marks and labels
+    for spine in ax.spines.values(): spine.set_color(text_color)                                # Set the color of the plot's bounding box (spines)
+
+    for entry in shape_library:
+        ax.clear()                                                                              # Clear the axis for the new plot 
+        contour_matrix = entry['contourShapeMatrix']                                            # Get the contour shape matrix
+        surface_matrix = entry['surfaceShapeMatrix']                                            # Get the surface shape matrix
+        vertices       = contour_matrix[:2, :].T                                                # Extract the unique vertices from the contour matrix
+
+        # --- Plot Triangulation ---
+        for i in range(surface_matrix.shape[1]):                                                 
+            triangle_coords = surface_matrix[:6, i].reshape(3, 2)                               # Get the vertices of the triangle
+            triangle_patch  = plt.Polygon(triangle_coords, edgecolor = 'orange', 
+                                          facecolor = 'red', alpha = 0.1, lw = 2.5)             # Create a semi-transparent triangle patch
+            ax.add_patch(triangle_patch)                                                        # Add the triangle patch to the plot
+            
+        # --- Plot Contour on Top ---
+        contour_patch = plt.Polygon(vertices, edgecolor = 'orange', 
+                                    facecolor = 'none', lw = 2.5, label = 'Original Contour')   # Create the contour polygon patch
+        ax.add_patch(contour_patch)                                                             # Add the contour patch to the plot
+        
+        # --- Final Plot Styling ---
+        ax.set_aspect('equal', 'box')                                                           # Ensure the plot has a 1:1 aspect ratio
+        ax.set_xlabel("x [m]", color = text_color, font = 'monospace')                          # Set the x-axis label
+        ax.set_ylabel("y [m]", color = text_color, font = 'monospace')                          # Set the y-axis label
+        ax.set_title(f"Shape: {entry['fullName']}", color = text_color, font = 'monospace')     # Set the plot title with the extended object's name
+        ax.grid(True, linestyle = '--', alpha = 0.2)
+        
+        # --- Adaptive Axis ---
+        x_coords = vertices[:, 0]                                                               # Extract x-coordinates for axis limits
+        y_coords = vertices[:, 1]                                                               # Extract y-coordinates for axis limits
+        margin   = np.mean(np.ptp(vertices, axis = 0)) * 0.1                                    # Calculate a margin based on the shape size
+        ax.set_xlim(np.min(x_coords) - margin, np.max(x_coords) + margin)                       # Set x-axis limits with margin
+        ax.set_ylim(np.min(y_coords) - margin, np.max(y_coords) + margin)                       # Set y-axis limits with margin
+        
+        fig.canvas.draw()                                                                       # Redraw the canvas with the new plot
+        fig.canvas.flush_events()                                                               # Process any pending UI events    
+        plt.waitforbuttonpress()                                                                # Pause execution and wait for a key press
+
+    plt.ioff()                                                                                  # Turn off interactive mode
+    plt.close(fig)                                                                              # Close the plot window
+    print("Triangulation validation complete.")                                                 # Announce the end of the validation
+    print("-" * 60)                                                                             # Print another separator
+
+# ==============================================================================
+# SECTION 4: GRID COVERAGE VALIDATION
 # ==============================================================================
 
 def validate_los_grid_coverage(shape_library, visibility_params):
@@ -213,11 +305,11 @@ def validate_los_grid_coverage(shape_library, visibility_params):
     ax.tick_params(colors = text_color)                                                         # Set the color of the tick marks and labels
     for spine in ax.spines.values(): spine.set_color(text_color)                                # Set the color of the plot's bounding box (spines)
 
-    for entry in shape_library:                                                                 # Loop through each aircraft shape in the library
+    for entry in shape_library:                                                                 # Loop through each extended object shape in the library
         ax.clear()                                                                              # Clear the axis for the new plot
         
-        # --- Plot Aircraft Shape ---
-        shapeMat = entry['shapeMatrix']                                                         # Get the shape matrix for the current aircraft
+        # --- Plot Extended Object Shape ---
+        shapeMat = entry['contourShapeMatrix']                                                  # Get the shape matrix for the current extended object
         for k in range(shapeMat.shape[1]):                                                      # Iterate through each edge in the shape matrix
             x_vals = [shapeMat[0, k], shapeMat[2, k]]                                           # Get the x-coordinates for the edge's start and end points
             y_vals = [shapeMat[1, k], shapeMat[3, k]]                                           # Get the y-coordinates for the edge's start and end points
@@ -230,7 +322,7 @@ def validate_los_grid_coverage(shape_library, visibility_params):
         ax.set_aspect('equal', 'box')                                                           # Ensure the plot has a 1:1 aspect ratio
         ax.set_xlabel("x [m]", color = text_color, font = 'monospace')                          # Set the x-axis label
         ax.set_ylabel("y [m]", color = text_color, font = 'monospace')                          # Set the y-axis label
-        ax.set_title(f"Shape: {entry['fullName']}", color = text_color, font = 'monospace')     # Set the plot title with the aircraft's name
+        ax.set_title(f"Shape: {entry['fullName']}", color = text_color, font = 'monospace')     # Set the plot title with the extended object's name
         ax.grid(True, linestyle = '--', alpha = 0.2)                                            # Add a faint grid for reference
         ax.axis([-120, 120, -120, 120])                                                         # Set fixed axis limits for consistent scale
         
@@ -244,14 +336,14 @@ def validate_los_grid_coverage(shape_library, visibility_params):
     print("-" * 60)                                                                             # Print another separator
 
 # ==============================================================================
-# SECTION 4: PERFORMANCE VALIDATION
+# SECTION 5: PERFORMANCE VALIDATION
 # ==============================================================================
 
 def validate_los_performance(shape_entry, num_sensors = 100):
     """Runs a performance and correctness check on the LoS flag computation."""
     print("Running LoS performance validation, please wait...")                                 # Announce the start of the performance test
-    shapeMatrix      = shape_entry['shapeMatrix']                                               # Get the shape matrix from the provided library entry
-    sensor_positions = np.random.uniform(low = -50, high = 50, size = (num_sensors, 2))         # Generate a set of random sensor positions for testing
+    contourShapeMatrix = shape_entry['contourShapeMatrix']                                      # Get the shape matrix from the provided library entry
+    sensor_positions   = np.random.uniform(low = -50, high = 50, size = (num_sensors, 2))       # Generate a set of random sensor positions for testing
 
     def segments_intersect_point_slow(p1, p2, q1, q2):                                          # Define a slow, robust implementation for segment intersection
         b, A = np.array([p2 - p1, q2 - q1]), np.column_stack(((p2 - p1), -(q2 - q1)))           # Set up the linear system to solve for intersection
@@ -261,24 +353,25 @@ def validate_los_performance(shape_entry, num_sensors = 100):
         if 0 <= t[0] <= 1 and 0 <= t[1] <= 1: return p1 + t[0] * b[0]                           # Check if intersection is within both segments and return point
         return None                                                                             # Otherwise, no valid intersection
 
-    def compute_edge_LoS_flag_slow(sensor_pos, edge_idx, shapeMatrix):                          # Define a slow reference implementation for LoS flag computation
-        n_edges     = shapeMatrix.shape[1]                                                      # Get number of edges
-        edge_center = (shapeMatrix[:2, edge_idx] + shapeMatrix[2:4, edge_idx]) / 2              # Get edge centers
+    def compute_edge_LoS_flag_slow(sensor_pos, edge_idx, contourShapeMatrix):                   # Define a slow reference implementation for LoS flag computation
+        n_edges     = contourShapeMatrix.shape[1]                                               # Get number of edges
+        edge_center = (contourShapeMatrix[:2, edge_idx] + contourShapeMatrix[2:4, 
+                                                                             edge_idx]) / 2     # Get edge centers
         for j in range(n_edges):                                                                # Iterate through all other edges
             if j == edge_idx: continue                                                          # Skip the target edge itself
             if segments_intersect_point_slow(sensor_pos, edge_center, 
-                                             shapeMatrix[:2, j], 
-                                             shapeMatrix[2:4, j]) is not None: return 0         # Check for intersection
+                                             contourShapeMatrix[:2, j], 
+                                             contourShapeMatrix[2:4, j]) is not None: return 0  # Check for intersection
         return 1                                                                                # Return 1 if no occlusions found
 
     start_time   = time.perf_counter()                                                          # Start the timer for the slow implementation
-    results_slow = [np.array([compute_edge_LoS_flag_slow(pos, i, shapeMatrix)
-                                for i in range(shapeMatrix.shape[1])
+    results_slow = [np.array([compute_edge_LoS_flag_slow(pos, i, contourShapeMatrix)
+                                for i in range(contourShapeMatrix.shape[1])
                             ]) for pos in sensor_positions]                                     # Run slow computation
     print(f"Slow implementation took: {time.perf_counter() - start_time:.4f} seconds")          # Print the elapsed time for the slow version
 
     start_time   = time.perf_counter()                                                          # Reset and start the timer for the fast implementation
-    results_fast = [compute_all_LoS_flags(pos, shapeMatrix) for pos in sensor_positions]        # Run the fast computation
+    results_fast = [compute_all_LoS_flags(pos, contourShapeMatrix) for pos in sensor_positions] # Run the fast computation
     print(f"Fast implementation took: {time.perf_counter() - start_time:.4f} seconds")          # Print the elapsed time for the fast version
 
     all_match = all(np.array_equal(a, b) for a, b in zip(results_slow, results_fast))           # Ensure all results match between implementations
@@ -286,7 +379,7 @@ def validate_los_performance(shape_entry, num_sensors = 100):
     print("-" * 60)                                                                             # Print a separator
 
 # ==============================================================================
-# SECTION 5: SHAPE LIBRARY VISUAL VALIDATION (IMPROVED)
+# SECTION 6: SHAPE LIBRARY VISUAL VALIDATION 
 # ==============================================================================
 
 def validate_shape_library_visuals(shape_library):
@@ -306,10 +399,10 @@ def validate_shape_library_visuals(shape_library):
         for spine in ax.spines.values():                                                        # Loop through the plot's bounding box (spines)
             spine.set_color(text_color)                                                         # Set the spine color to white
 
-    for entry in shape_library:                                                                 # Loop through each aircraft shape in the library
+    for entry in shape_library:                                                                 # Loop through each extended object shape in the library
         ax1.clear()                                                                             # Clear the left subplot for the new drawing
         ax2.clear()                                                                             # Clear the right subplot for the new drawing
-        shapeMat = entry['shapeMatrix']                                                         # Unpack the shape matrix for the current entry
+        shapeMat = entry['contourShapeMatrix']                                                  # Unpack the shape matrix for the current entry
         LoSTable = entry['LoSTable']                                                            # Unpack the LoS table for the current entry
         sensor_pos = np.random.uniform(low = -50, high = 50, size = (2,))                       # Generate a random sensor position for this validation instance
 
@@ -320,9 +413,9 @@ def validate_shape_library_visuals(shape_library):
         visibility_flags    = LoSTable['flags'][nearest_idx, :]                                 # Get the pre-computed visibility flags for that grid point
 
         # --- LEFT PLOT (ax1): Grid and Sensor Position ---
-        for k in range(shapeMat.shape[1]):                                                      # Loop through each edge of the aircraft shape
+        for k in range(shapeMat.shape[1]):                                                      # Loop through each edge of the extended object shape
             ax1.plot([shapeMat[0, k], shapeMat[2, k]], 
-                     [shapeMat[1, k], shapeMat[3, k]], color = 'white', linewidth = 1.5)        # Plot the aircraft shape outline
+                     [shapeMat[1, k], shapeMat[3, k]], color = 'white', linewidth = 1.5)        # Plot the extended object shape outline
             
         ax1.scatter(grid_points[:, 0], grid_points[:, 1], 
                     s = 2, c = 'y', alpha = 0.3, label = 'LoS Grid')                            # Plot all LoS grid points as semi-transparent yellow dots
@@ -338,7 +431,7 @@ def validate_shape_library_visuals(shape_library):
                    labelcolor = 'white', prop = {'family': 'monospace'})                        # Add a legend with appropriate styling
 
         # --- RIGHT PLOT (ax2): Visibility Result ---
-        for k in range(shapeMat.shape[1]):                                                      # Loop through each edge of the aircraft shape again
+        for k in range(shapeMat.shape[1]):                                                      # Loop through each edge of the extended object shape again
             x_vals  = [shapeMat[0, k], shapeMat[2, k]]                                          # Get the x-coordinates for the current edge
             y_vals  = [shapeMat[1, k], shapeMat[3, k]]                                          # Get the y-coordinates for the current edge
             color   = 'green' if visibility_flags[k] > 0 else 'red'                             # Determine the color based on the visibility flag
@@ -381,7 +474,7 @@ def validate_shape_library_visuals(shape_library):
     print("-" * 60)                                                                             # Print a separator
 
 # ==============================================================================
-# SECTION 6: EXECUTION
+# SECTION 7: EXECUTION
 # ==============================================================================
 
 if __name__ == "__main__":
@@ -395,25 +488,32 @@ if __name__ == "__main__":
             # --- Step 1: Generate preliminary library (shape matrices only) ---
             prelim_library = []                                                                 # Initialize a temporary library to hold basic shape info
             with h5py.File(H5_INPUT_PATH, 'r') as f:                                            # Open the HDF5 file for reading
-                for key in list(f.keys()):                                                      # Iterate through each aircraft shape in the file
+                for key in tqdm(list(f.keys()), desc='Generating Shape Matrices'):              # Iterate through each extended object shape in the file
+                    csm   = contourShapeMatrixGenerator(f[key]["foldedVertices"][:])            # Generate the contour matrix first
+                    ssm   = contourShapeMatrixGenerator(csm)                                    # Now generate the surface matrix from the contour matrix
                     entry = {                                                                   # Create a dictionary for the current shape
-                        'fullName'    : str(f[key].attrs.get("name", "Unknown")),               # Get the full name from HDF5 attributes
-                        'shortName'   : str(f[key].attrs.get("id", "N/A")),                     # Get the short name/ID from HDF5 attributes
-                        'shapeMatrix' : shapeMatrixGenerator(f[key]["foldedVertices"][:])       # Generate the shape matrix from the raw vertex data
+                        'fullName'           : str(f[key].attrs.get("name", "Unknown")),        # Get the full name from HDF5 attributes
+                        'shortName'          : str(f[key].attrs.get("id", "N/A")),              # Get the short name/ID from HDF5 attributes
+                        'contourShapeMatrix' : csm,                                             # Store the generated contour matrix
+                        'surfaceShapeMatrix' : ssm                                              # Store the generated surface matrix
                     }
                     prelim_library.append(entry)                                                # Add the new entry to our preliminary library
             print(f"Processed {len(prelim_library)} shapes from HDF5 file.")                    # Print a summary of how many shapes were processed
+            
+            # --- Step 2: Pre-validation of triangulation (if enabled) ---
+            if RUN_TRIANGULATION_VALIDATION:                                                    # Check if triangulation validation is enabled                                
+                validate_triangulation_visuals(prelim_library)                                  # Run the triangulation pre-validation    
 
-            # --- Step 2: Pre-validation of grid points (if enabled) ---    
+            # --- Step 3: Pre-validation of grid points (if enabled) ---    
             if RUN_GRID_VALIDATION and GENERATE_VISIBILITY_TABLES:                              # Check if grid validation is enabled
                 validate_los_grid_coverage(prelim_library, VISIBILITY_PARAMS)                   # Run the grid coverage pre-check
 
-            # --- Step 3: Generate LoS tables (the time-consuming part) ---
+            # --- Step 4: Generate LoS tables (the time-consuming part) ---
             generation_start_time = time.perf_counter()                                         # Start a timer specifically for the LoS table generation
             if GENERATE_VISIBILITY_TABLES:                                                      # Check if LoS table generation is enabled
                 print("Generating Line-of-Sight tables...")                                     # Announce the start of this intensive process
                 for entry in tqdm(prelim_library, desc='Processing shapes'):                    # Loop through the shapes with a progress bar
-                    entry['LoSTable'] = generate_visibility_table(entry['shapeMatrix'], 
+                    entry['LoSTable'] = generate_visibility_table(entry['contourShapeMatrix'], 
                                                                   VISIBILITY_PARAMS)            # Generate and add the LoS table to each entry
             shape_library = prelim_library                                                      # The preliminary library is now the final, complete library
             
@@ -423,7 +523,7 @@ if __name__ == "__main__":
                 print(f"LoS table generation took: {int(gen_minutes)} minutes "
                       f"and {gen_seconds:.2f} seconds.")                                        # Print the formatted duration
 
-            # --- Step 4: Save the final library to a file ---
+            # --- Step 5: Save the final library to a file ---
             print(f"Saving library to '{SHAPE_LIBRARY_PATH}'...")                               # Announce that the library is being saved to a file
             with open(SHAPE_LIBRARY_PATH, 'wb') as f: pickle.dump(shape_library, f)             # Open the output file and save the library using pickle
             print("Shape library generation complete.")                                         # Confirm that the generation process is finished
@@ -452,5 +552,4 @@ if __name__ == "__main__":
         elif RUN_GRID_VALIDATION or RUN_PERFORMANCE_VALIDATION or RUN_VISUAL_VALIDATION:        # If validation is on but there's no LoS data
             print("\nWarning: Validation tests were enabled, but the shape library")            # Print a warning message
             print("does not contain Line-of-Sight (LoS) tables. Skipping validation.")          # Explain that the tests are being skipped
-
 

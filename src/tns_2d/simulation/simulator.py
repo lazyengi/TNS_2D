@@ -24,15 +24,15 @@ All wrongs reserved.
 import numpy as np
 import pandas as pd
 import time
-from .data_structures import Aircraft, Sensor
+from .data_structures import ExtendedObject, Sensor
 
 # ==============================================================================
-# SECTION 1: THE SIMULATOR CLASS
+# SECTION 1: SIMULATOR CLASS
 # ==============================================================================
 
 class Simulator:
     """The central orchestrator for the TNS-2D simulation."""
-    def __init__(self, aircraft: list[Aircraft], sensors: list[Sensor], shape_library: dict, 
+    def __init__(self, extended_objects: list[ExtendedObject], sensors: list[Sensor], shape_library: dict, 
                  global_dt: float, spine_length: float, max_duration: float,
                  use_dropouts: bool = True, use_los: bool = True, use_oor: bool = True,
                  verbose: bool = True):
@@ -40,21 +40,21 @@ class Simulator:
         Initializes the Simulator with the complete scenario configuration.
 
         Args:
-            aircraft (list[Aircraft])       : List of configured Aircraft objects.
-            sensors (list[Sensor])          : List of configured Sensor objects.
-            shape_library (dict)            : Library mapping shape indices to shape data.
-            global_dt (float)               : Master time step for the simulation grid [s].
-            spine_length (float)            : Half-length of the simulation area.
-            max_duration (float)            : Maximum allowed duration for the simulation [s]
-            use_dropouts (bool, optional)   : If True, simulates sensor dropouts. 
-            use_los (bool, optional)        : If True, simulates Line-of-Sight blockages. 
-            use_oor (bool, optional)        : If True, simulates Out-of-Range conditions.
-            verbose (bool, optional)        : If True, prints progress information. 
+            extended_objects (list[ExtendedObject]) : List of configured ExtendedObject objects.
+            sensors (list[Sensor])                  : List of configured Sensor objects.
+            shape_library (dict)                    : Library mapping shape indices to shape data.
+            global_dt (float)                       : Master time step for the simulation grid [s].
+            spine_length (float)                    : Half-length of the simulation area.
+            max_duration (float)                    : Maximum allowed duration for the simulation [s]
+            use_dropouts (bool, optional)           : If True, simulates sensor dropouts. 
+            use_los (bool, optional)                : If True, simulates Line-of-Sight blockages. 
+            use_oor (bool, optional)                : If True, simulates Out-of-Range conditions.
+            verbose (bool, optional)                : If True, prints progress information. 
         """
         # --- Core Simulation Objects ---
-        self.aircraft       = aircraft
-        self.sensors        = sensors
-        self.shape_library  = shape_library
+        self.extended_objects = extended_objects
+        self.sensors          = sensors
+        self.shape_library    = shape_library
 
         # --- Global Simulation Parameters ---
         self.global_dt      = global_dt
@@ -78,8 +78,8 @@ class Simulator:
 
         if self.verbose:
             print("Step 1: Generating raw trajectories...")
-        for ac in self.aircraft:
-            _generate_raw_trajectory(ac, self.max_duration)                                             # Generate trajectories up to the max possible duration
+        for eo in self.extended_objects:
+            _generate_raw_trajectory(eo, self.max_duration)                                             # Generate trajectories up to the max possible duration
 
         if self.verbose:
             print("Step 2: Aligning trajectories to master time grid...")
@@ -97,47 +97,47 @@ class Simulator:
     def _align_all_tracks(self):
         """Creates the master time grid based on actual events and aligns all trajectories."""
         # --- Step 1: Mask Raw Tracks and Find Terminal Exit Times ---
-        terminal_exit_times = []                                                                        # Holds the last in-bounds time for each aircraft
-        for ac in self.aircraft:
+        terminal_exit_times = []                                                                        # Holds the last in-bounds time for each extended object
+        for eo in self.extended_objects:
             # Create a mask for any data points that have left the simulation area
-            mask                    = (np.abs(ac.raw_track[0, :]) > self.spine_length) | \
-                                       (np.abs(ac.raw_track[1, :]) > self.spine_length)
-            ac.raw_track[:, mask]   = np.nan                                                            # Nullify the out-of-bounds data points
+            mask                    = (np.abs(eo.raw_track[0, :]) > self.spine_length) | \
+                                       (np.abs(eo.raw_track[1, :]) > self.spine_length)
+            eo.raw_track[:, mask]   = np.nan                                                            # Nullify the out-of-bounds data points
             
-            valid_times = ac.raw_time[~np.isnan(ac.raw_track[0,:])]                                     # Get the timestamps for all in-bounds points       
+            valid_times = eo.raw_time[~np.isnan(eo.raw_track[0,:])]                                     # Get the timestamps for all in-bounds points       
             if valid_times.size > 0:
-                terminal_exit_times.append(np.max(valid_times))                                         # Record the aircraft's final valid timestamp
+                terminal_exit_times.append(np.max(valid_times))                                         # Record the extended object's final valid timestamp
 
         # --- Step 2: Determine True Simulation Duration ---
-        t_start             = min((np.nanmin(ac.raw_time) for ac in self.aircraft 
-                                   if ac.raw_time is not None and ac.raw_time.size > 0), default = 0)   # Find the earliest start time across all aircraft
-        true_event_duration = max(terminal_exit_times) if terminal_exit_times else t_start              # Find the latest exit time across all aircraft
+        t_start             = min((np.nanmin(eo.raw_time) for eo in self.extended_objects 
+                                   if eo.raw_time is not None and eo.raw_time.size > 0), default = 0)   # Find the earliest start time across all extended objects
+        true_event_duration = max(terminal_exit_times) if terminal_exit_times else t_start              # Find the latest exit time across all extended objects
         final_t_end         = min(true_event_duration, self.max_duration)                               # Clamp to the maximum allowed duration
 
         # --- Step 3: Create the Master Time Grid ---
         self.time_grid = np.arange(t_start, final_t_end + self.global_dt, self.global_dt)               # Create the master time grid
         K              = len(self.time_grid)                                                            # Total number of time steps
 
-        # --- Step 4: Align Each Aircraft's Track to the Grid ---
-        for ac in self.aircraft:
-            ac.aligned_track    = np.full((4, K), np.nan)                                               # Initialize aligned track with NaNs
-            valid_mask          = ~np.isnan(ac.raw_track[0, :])                                         # Find all valid (in-bounds) points in the raw track
-            if not np.any(valid_mask): continue                                                         # Skip this aircraft if it has no valid data
+        # --- Step 4: Align Each Extended Object's Track to the Grid ---
+        for eo in self.extended_objects:
+            eo.aligned_track    = np.full((4, K), np.nan)                                               # Initialize aligned track with NaNs
+            valid_mask          = ~np.isnan(eo.raw_track[0, :])                                         # Find all valid (in-bounds) points in the raw track
+            if not np.any(valid_mask): continue                                                         # Skip this extended object if it has no valid data
             
-            raw_times_valid                     = ac.raw_time[valid_mask]                               # Get the timestamps of the valid raw data
+            raw_times_valid                     = eo.raw_time[valid_mask]                               # Get the timestamps of the valid raw data
             grid_indices                        = np.searchsorted(self.time_grid, 
                                                                 raw_times_valid, side = 'left')         # Find where each raw timestamp fits into the master grid
             grid_indices                        = np.clip(grid_indices, 0, K - 1)                       # Prevent indices from going out of bounds
             unique_indices, unique_raw_map      = np.unique(grid_indices, return_index = True)          # Get unique grid indices and their raw data indices
-            ac.aligned_track[:, unique_indices] = ac.raw_track[:, valid_mask][:, unique_raw_map]        # Place the valid raw data onto the master grid
+            eo.aligned_track[:, unique_indices] = eo.raw_track[:, valid_mask][:, unique_raw_map]        # Place the valid raw data onto the master grid
 
             # --- Step 4a: Housekeeping ---
-            df = pd.DataFrame(ac.aligned_track.T)                                                       # Use a DataFrame for convenient interpolation  
+            df = pd.DataFrame(eo.aligned_track.T)                                                       # Use a DataFrame for convenient interpolation  
             df.interpolate(method = 'linear', limit = 1, axis = 0, inplace = True)                      # Linearly interpolate gaps (up to 1 consecutive NaN)
-            ac.aligned_track = df.to_numpy().T                                                          # Convert back to NumPy array
+            eo.aligned_track = df.to_numpy().T                                                          # Convert back to NumPy array
             
             # Normalize the heading angle to ensure it stays within the [-pi, pi) range
-            heading_row                 = ac.aligned_track[2, :]                                        # Extract the heading row   
+            heading_row                 = eo.aligned_track[2, :]                                        # Extract the heading row   
             valid_headings              = ~np.isnan(heading_row)                                        # Identify valid (non-NaN) headings
             heading_row[valid_headings] = np.arctan2(np.sin(heading_row[valid_headings]), 
                                                      np.cos(heading_row[valid_headings]))               # Normalize valid headings
@@ -170,17 +170,35 @@ class Simulator:
                     clutter_points, clutter_labels  = _generate_clutter(sensor)                         # Generate clutter points for this scan
                     all_points, all_labels          = [clutter_points], [clutter_labels]                # Start with clutter points and labels
                     
-                    # --- Generate True Detections from All Aircraft ---
-                    for aircraft in self.aircraft:
-                        if not np.isnan(aircraft.aligned_track[0, k]):                                  # Only consider aircraft that are in-bounds at this time
-                            aircraft_pose  = aircraft.aligned_track[:3, k]                              # Extract the aircraft's pose at this time
-                            aircraft_id    = aircraft.identifier                                        # Extract aircraft identifier
-                            aircraft_shape = self.shape_library[aircraft.shape_idx]                     # Extract aircraft shape information
+                    # --- Generate True Detections from All Extended Objects ---
+                    for extended_object in self.extended_objects:
+                        if not np.isnan(extended_object.aligned_track[0, k]):                           # Only consider extended objects that are in-bounds at this time
+                            extended_object_pose  = extended_object.aligned_track[:3, k]                # Extract the extended object's pose at this time
+                            extended_object_id    = extended_object.identifier                          # Extract extended object identifier
+                            extended_object_shape = self.shape_library[extended_object.shape_idx]       # Extract extended object shape information
                             
-                            det_points, det_labels = _generate_detections(
-                                aircraft_pose, aircraft_id, sensor, aircraft_shape, dropout_status,
-                                self.use_los, self.use_oor
-                            )                                                                           # Generate detections for this aircraft
+                            if sensor.generation_mode == "contour":                                     # Generate detections on the contour      
+                                det_points, det_labels = _generate_detections_on_contour(
+                                    extended_object_pose, extended_object_id, sensor, 
+                                    extended_object_shape, dropout_status,
+                                    self.use_los, self.use_oor
+                                )
+                            elif sensor.generation_mode == "surface":                                   # Generate detections on the surface    
+                                det_points, det_labels = _generate_detections_on_surface(
+                                    extended_object_pose, extended_object_id, sensor, 
+                                    extended_object_shape, dropout_status,
+                                    self.use_los, self.use_oor
+                                )
+                            elif sensor.generation_mode == "center":                                    # Generate detection at the center   
+                                det_points, det_labels = _generate_detections_on_center(
+                                    extended_object_pose, extended_object_id, sensor, 
+                                    extended_object_shape, dropout_status,
+                                    self.use_los, self.use_oor
+                                )
+                            else:
+                                print(f"Warning: Unknown generation_mode '{sensor.generation_mode}' "
+                                      f"for sensor {sensor.identifier}. No detections will be generated.")
+                                det_points, det_labels = np.empty((0, 2)), np.empty(0, dtype=int)
 
                             if det_points.size > 0:                                                     # Check if there are detection points
                                 all_points.append(det_points)                                           # Append detection points
@@ -196,26 +214,26 @@ class Simulator:
                               'labels': labels}                                                         # Store the final dataset in the sensor object
 
 # ==============================================================================
-# SECTION 2: CORE ALGORITHMS (HELPER FUNCTIONS)
+# SECTION 2: CORE ALGORITHMS 
 # ==============================================================================
 
-def _generate_raw_trajectory(aircraft: Aircraft, t_end: float):
-    """Generates a raw, high-resolution trajectory for a single aircraft."""
+def _generate_raw_trajectory(extended_object: ExtendedObject, t_end: float):
+    """Generates a raw, high-resolution trajectory for a single extended object."""
     # --- Generate Time Vector ---
-    dt          = aircraft.dt
+    dt          = extended_object.dt
     time_vector = np.arange(0, t_end + dt, dt)                                                          # Time vector for raw trajectory generation
 
     # --- Generate Control Inputs ---
-    u_lon_vals  = aircraft.long_vals
-    u_lon_times = aircraft.long_times
-    u_cen_vals  = aircraft.centr_vals
-    u_cen_times = aircraft.centr_times
+    u_lon_vals  = extended_object.long_vals
+    u_lon_times = extended_object.long_times
+    u_cen_vals  = extended_object.centr_vals
+    u_cen_times = extended_object.centr_times
     u_signal    = _convert_control_inputs(time_vector, u_lon_vals, 
                                           u_lon_times, u_cen_vals, u_cen_times)                         # Convert event-based controls to continuous signal
 
     # --- Initialize State and Storage ---
-    x0 = np.array([aircraft.initial_position[0], aircraft.initial_position[1], 
-                   aircraft.initial_heading, aircraft.initial_speed])                                   # Initial state vector [x, y, heading, speed]
+    x0 = np.array([extended_object.initial_position[0], extended_object.initial_position[1], 
+                   extended_object.initial_heading, extended_object.initial_speed])                     # Initial state vector [x, y, heading, speed]
 
     # --- Integrate Dynamics Using ZOH ---
     K       = len(time_vector)                                                                          # Total number of time steps
@@ -226,8 +244,8 @@ def _generate_raw_trajectory(aircraft: Aircraft, t_end: float):
     for k in range(K - 1):
         x[:, k + 1], _ = _zoh_integrator(x[:, k], u_signal[:, k], dt)                                   # Perform ZOH integration step  
 
-    aircraft.raw_time  = time_vector + aircraft.t_init                                                  # Store the raw time vector, adjusted for initial time
-    aircraft.raw_track = x                                                                              # Store the raw trajectory
+    extended_object.raw_time  = time_vector + extended_object.t_init                                    # Store the raw time vector, adjusted for initial time
+    extended_object.raw_track = x                                                                       # Store the raw trajectory
 
 def _zoh_integrator(x_k, u_k, dt):
     """Performs one step of Zero-Order Hold (ZOH) integration."""
@@ -316,24 +334,28 @@ def _generate_clutter(sensor: Sensor):
 
     return points_world, labels
 
-def _generate_detections(aircraft_pose: np.ndarray, aircraft_id: int, 
-                         sensor: Sensor, aircraft_shape: dict, 
+# ==============================================================================
+# SECTION 3: CONTOUR DETECTION GENERATION FUNCTIONS
+# ==============================================================================
+
+def _generate_detections_on_contour(extended_object_pose: np.ndarray, extended_object_id: int, 
+                         sensor: Sensor, extended_object_shape: dict, 
                          dropout_status: float, use_los: bool, use_oor: bool):
-    """Generates a point cloud of true detections for a single aircraft."""
-    # --- Unpack Aircraft Shape Information ---
-    shape_matrix        = aircraft_shape['shapeMatrix']                                                 # Shape matrix defining the aircraft's geometry
-    los_table           = aircraft_shape.get('LoSTable')                                                # Line-of-Sight table
-    n_edges             = shape_matrix.shape[1]                                                         # Number of edges in the shape
+    """Generates a point cloud of true detections on an extended object's contour."""
+    # --- Unpack Extended Object Shape Information ---
+    contourShapeMatrix  = extended_object_shape['contourShapeMatrix']                                   # Shape matrix defining the extended object's geometry
+    los_table           = extended_object_shape.get('LoSTable')                                         # Line-of-Sight table
+    n_edges             = contourShapeMatrix.shape[1]                                                   # Number of edges in the shape
     
     # --- Compute Edge Positions in World Frame ---
-    edge_starts_local   = shape_matrix[:2, :].T                                                         # Edge start points in aircraft frame
-    edge_ends_local     = shape_matrix[2:4, :].T                                                        # Edge end points in aircraft frame
-    edge_lengths        = shape_matrix[4, :]                                                            # Edge lengths
+    edge_starts_local   = contourShapeMatrix[:2, :].T                                                   # Edge start points in extended object frame
+    edge_ends_local     = contourShapeMatrix[2:4, :].T                                                  # Edge end points in extended object frame
+    edge_lengths        = contourShapeMatrix[4, :]                                                      # Edge lengths
 
     # --- Compute Flags and Detection Rates ---
     sensor_pose_vec     = np.array([sensor.position[0], sensor.position[1], sensor.heading])            # Sensor pose in world frame
-    edge_starts_world   = _roto_translate(edge_starts_local, aircraft_pose)                             # Edge start points in world frame
-    edge_ends_world     = _roto_translate(edge_ends_local, aircraft_pose)                               # Edge end points in world frame
+    edge_starts_world   = _roto_translate(edge_starts_local, extended_object_pose)                      # Edge start points in world frame
+    edge_ends_world     = _roto_translate(edge_ends_local, extended_object_pose)                        # Edge end points in world frame
     edge_centers_world  = (edge_starts_world + edge_ends_world) / 2                                     # Edge center points in world frame
     edge_centers_sensor = _roto_translate(edge_centers_world, sensor_pose_vec, inverse=True)            # Edge center points in sensor frame
 
@@ -344,7 +366,7 @@ def _generate_detections(aircraft_pose: np.ndarray, aircraft_id: int,
     else: oor_flags = np.ones(n_edges, dtype = int)                                                     # otherwise assume all edges are in range
     
     if use_los and los_table is not None:                                                               # If LoS is enabled and the table is provided...                         
-        los_flags = _compute_los_flags(aircraft_pose, sensor_pose_vec, los_table)                       # ...compute Line-of-Sight flags
+        los_flags = _compute_los_flags(extended_object_pose, sensor_pose_vec, los_table)                # ...compute Line-of-Sight flags
     else: los_flags = np.ones(n_edges, dtype = int)                                                     # otherwise assume all edges are in LoS
 
     lambda_i            = sensor.resolution * edge_lengths * los_flags * oor_flags * dropout_status     # Expected detections per edge
@@ -359,12 +381,162 @@ def _generate_detections(aircraft_pose: np.ndarray, aircraft_id: int,
     edge_probs      = lambda_i / total_lambda                                                           # Probability of selecting each edge
     selected_edges  = np.random.choice(n_edges, size = n_measurements, p = edge_probs)                  # Sample edges based on probabilities
     points          = [                                                                                 # Sample points along each selected edges              
-                        _sample_measurement(i, edge_starts_world, edge_ends_world, sensor.sigma_v)          
+                        _sample_measurement_on_contour(edge_starts_world[i], 
+                                                       edge_ends_world[i], sensor.sigma_v)          
                         for i in selected_edges
                         ]    
-    labels          = np.full(n_measurements, aircraft_id, dtype = int)                                 # Labels for each detection point (aircraft ID)
+    labels          = np.full(n_measurements, extended_object_id, dtype = int)                          # Labels for each detection point (extended object ID)
 
     return np.array(points), labels
+
+def _compute_los_flags(extended_object_pose, sensor_pose, los_table):
+    """Computes Line-of-Sight flags using a pre-computed visibility table."""
+    # --- Find Grid Point Closest to Sensor  ---
+    sensor_pos_ac   = _roto_translate(sensor_pose[:2].reshape(1, -1), 
+                                      extended_object_pose, inverse = True)[0]                          # Sensor position in extended object frame
+    # --- Find Closest Point in the Flat Grid ---
+    diffs           = los_table['coords'] - sensor_pos_ac                                               # Differences to all grid points (now a 2D array)
+    dists           = np.linalg.norm(diffs, axis = 1)                                                   # Euclidean distances to all grid points (now a 1D array)
+    idx             = np.argmin(dists)                                                                  # Index of the closest grid point in the flat list
+    return los_table['flags'][idx, :].astype(int)                                                       # Return LoS flags for all edges from the closest point
+
+def _compute_oor_flags(feature_centers_sensor, min_r, max_r, min_b, max_b):
+    """Computes Out-of-Range flags based on sensor FoV for a set of feature centers."""
+    ranges   = np.linalg.norm(feature_centers_sensor, axis = 1)                                         # Ranges to feature centers
+    bearings = np.arctan2(feature_centers_sensor[:, 1], feature_centers_sensor[:, 0])                   # Bearings to feature centers
+    return ((ranges >= min_r) & (ranges <= max_r) & \
+            (bearings >= min_b) & (bearings <= max_b)).astype(int)                                      # Return OOR flags for all features
+
+def _sample_measurement_on_contour(edge_start: np.ndarray, edge_end: np.ndarray, sigma_v: float):
+    """Samples a single noisy measurement point along a specified edge."""
+    u               = np.random.uniform()                                                               # Sample a uniform [0, 1]
+    point_on_edge   = (1 - u) * edge_start + u * edge_end                                               # Interpolate point along the edge 
+    noise           = np.random.normal(scale = sigma_v, size = 2)                                       # Add Gaussian noise to the point
+    return point_on_edge + noise
+
+# ==============================================================================
+# SECTION 4: SURFACE DETECTION GENERATION FUNCTIONS
+# ==============================================================================
+
+def _generate_detections_on_surface(extended_object_pose: np.ndarray, extended_object_id: int, 
+                                    sensor: Sensor, extended_object_shape: dict, 
+                                    dropout_status: float, use_los: bool, use_oor: bool):
+    """Generates a point cloud of true detections on an extended object's surface."""
+    # (1) Unpack shape information
+    surfaceShapeMatrix = extended_object_shape.get('surfaceShapeMatrix')
+    if surfaceShapeMatrix is None or surfaceShapeMatrix.size == 0:
+        return np.empty((0, 2)), np.empty(0, dtype=int)
+    
+    n_triangles  = surfaceShapeMatrix.shape[1]
+    tri_areas    = surfaceShapeMatrix[6, :]
+    
+    # (2) Compute triangle positions in world coordinates
+    v0_local = surfaceShapeMatrix[0:2, :].T
+    v1_local = surfaceShapeMatrix[2:4, :].T
+    v2_local = surfaceShapeMatrix[4:6, :].T
+
+    v0_world = _roto_translate(v0_local, extended_object_pose)
+    v1_world = _roto_translate(v1_local, extended_object_pose)
+    v2_world = _roto_translate(v2_local, extended_object_pose)
+
+    # (3) Compute triangle centers in sensor coordinates
+    sensor_pose_vec      = np.array([sensor.position[0], sensor.position[1], sensor.heading])
+    tri_centers_world    = (v0_world + v1_world + v2_world) / 3.0
+    tri_centers_sensor   = _roto_translate(tri_centers_world, sensor_pose_vec, inverse=True)
+    
+    # (4) Compute OOR flags for each triangle
+    if use_oor:
+        oor_flags = _compute_oor_flags(tri_centers_sensor, sensor.min_range, 
+                                       sensor.max_range, sensor.min_bearing, 
+                                       sensor.max_bearing)
+    else:
+        oor_flags = np.ones(n_triangles, dtype=int)
+
+    # (5) Compute expected detections per triangle (ignoring LoS)
+    lambda_i     = sensor.resolution * tri_areas * oor_flags * dropout_status
+    total_lambda = np.sum(lambda_i)
+
+    # (6) Use Poisson sampling on the expected detections
+    if total_lambda == 0:
+        return np.empty((0, 2)), np.empty(0, dtype=int)
+
+    n_measurements = np.random.poisson(total_lambda)
+    if n_measurements == 0:
+        return np.empty((0, 2)), np.empty(0, dtype=int)
+
+    triangle_probs   = lambda_i / total_lambda
+    selected_tris    = np.random.choice(n_triangles, size=n_measurements, p=triangle_probs)
+    
+    # --- Sample points within each selected triangle ---
+    points = [
+        _sample_measurement_on_triangle(v0_world[i], v1_world[i], v2_world[i], sensor.sigma_v)
+        for i in selected_tris
+    ]
+    labels = np.full(n_measurements, extended_object_id, dtype=int)
+
+    return np.array(points), labels
+
+def _sample_measurement_on_triangle(v0: np.ndarray, v1: np.ndarray, v2: np.ndarray, sigma_v: float):
+    """Samples a single noisy measurement point uniformly within a specified triangle."""
+    # --- Generate two uniform random numbers for barycentric coordinates ---
+    u1, u2 = np.random.uniform(size=2)
+
+    # --- Sample a point uniformly within the triangle using Kraemer's method ---
+    # This ensures a statistically uniform distribution of points.
+    point_on_triangle = (1 - np.sqrt(u1)) * v0 + \
+                        (np.sqrt(u1) * (1 - u2)) * v1 + \
+                        (np.sqrt(u1) * u2) * v2
+
+    # --- Add Gaussian measurement noise ---
+    noise = np.random.normal(scale=sigma_v, size=2)
+    return point_on_triangle + noise
+
+# ==============================================================================
+# SECTION 5: CENTER DETECTION GENERATION FUNCTIONS
+# ==============================================================================
+
+def _generate_detections_on_center(extended_object_pose: np.ndarray, extended_object_id: int, 
+                                   sensor: Sensor, extended_object_shape: dict, 
+                                   dropout_status: float, use_los: bool, use_oor: bool):
+    """Generates a single point detection on an extended object's center."""
+    # --- Unpack Shape Info and Compute Center of Geometry ---
+    contourShapeMatrix  = extended_object_shape['contourShapeMatrix']
+    edge_starts_local   = contourShapeMatrix[:2, :].T
+    edge_ends_local     = contourShapeMatrix[2:4, :].T
+    edge_lengths        = contourShapeMatrix[4, :]
+    total_length        = np.sum(edge_lengths)
+
+    if total_length == 0:
+        return np.empty((0, 2)), np.empty(0, dtype=int)
+
+    weights             = edge_lengths / total_length
+    edge_centers_local  = (edge_starts_local + edge_ends_local) / 2.0
+    center_local        = np.sum(edge_centers_local * weights[:, np.newaxis], axis=0)
+
+    # --- Transform Center to World and Sensor Frames ---
+    sensor_pose_vec = np.array([sensor.position[0], sensor.position[1], sensor.heading])
+    center_world    = _roto_translate(center_local.reshape(1, -1), extended_object_pose)[0]
+    center_sensor   = _roto_translate(center_world.reshape(1, -1), sensor_pose_vec, inverse=True)
+
+    # --- Compute OOR Flag for the Center Point ---
+    if use_oor:
+        oor_flag = _compute_oor_flags(center_sensor, sensor.min_range, 
+                                      sensor.max_range, sensor.min_bearing, 
+                                      sensor.max_bearing)[0]
+    else:
+        oor_flag = 1
+
+    # --- Generate a single measurement if conditions are met ---
+    if oor_flag * dropout_status == 1:
+        noise = np.random.normal(scale=sensor.sigma_v, size=2)
+        point = center_world + noise
+        return np.array([point]), np.array([extended_object_id], dtype=int)
+    else:
+        return np.empty((0, 2)), np.empty(0, dtype = int)
+
+# ==============================================================================
+# SECTION 6: HELPER FUNCTIONS
+# ==============================================================================
 
 def _roto_translate(points, pose, inverse = False):
     """Applies a 2D roto-translation to a set of points."""
@@ -381,29 +553,3 @@ def _roto_translate(points, pose, inverse = False):
         return (R.T @ (points_T - np.array([[x], [y]]))).T                                              # Inverse transformation    
     else:
         return (R @ points_T).T + np.array([x, y])                                                      # Forward transformation
-
-def _compute_los_flags(aircraft_pose, sensor_pose, los_table):
-    """Computes Line-of-Sight flags using a pre-computed visibility table."""
-    # --- Find Grid Point Closest to Sensor  ---
-    sensor_pos_ac   = _roto_translate(sensor_pose[:2].reshape(1, -1), 
-                                      aircraft_pose, inverse = True)[0]                                 # Sensor position in aircraft frame
-    # --- Find Closest Point in the Flat Grid ---
-    diffs           = los_table['coords'] - sensor_pos_ac                                               # Differences to all grid points (now a 2D array)
-    dists           = np.linalg.norm(diffs, axis = 1)                                                   # Euclidean distances to all grid points (now a 1D array)
-    idx             = np.argmin(dists)                                                                  # Index of the closest grid point in the flat list
-    return los_table['flags'][idx, :].astype(int)                                                       # Return LoS flags for all edges from the closest point
-
-def _compute_oor_flags(edge_centers_sensor, min_r, max_r, min_b, max_b):
-    """Computes Out-of-Range flags based on sensor FoV."""
-    ranges   = np.linalg.norm(edge_centers_sensor, axis = 1)                                            # Ranges to edge centers
-    bearings = np.arctan2(edge_centers_sensor[:, 1], edge_centers_sensor[:, 0])                         # Bearings to edge centers
-    return ((ranges >= min_r) & (ranges <= max_r) & \
-            (bearings >= min_b) & (bearings <= max_b)).astype(int)                                      # Return OOR flags for all edges
-
-def _sample_measurement(edge_idx, edge_starts, edge_ends, sigma_v):
-    """Samples a single noisy measurement point along a specified edge."""
-    u               = np.random.uniform()                                                               # Sample a uniform [0, 1]
-    point_on_edge   = (1 - u) * edge_starts[edge_idx] + u * edge_ends[edge_idx]                         # Interpolate point along the edge 
-    noise           = np.random.normal(scale = sigma_v, size = 2)                                       # Add Gaussian noise to the point
-    return point_on_edge + noise
-

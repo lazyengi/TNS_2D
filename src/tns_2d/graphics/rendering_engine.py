@@ -47,21 +47,21 @@ POINTCLOUD_DECAY_RATE       = 3.0                       # Exponential decay rate
 @dataclass
 class _RenderState:
     """A container for all data and state required by the animation callbacks."""
-    ax                      : plt.Axes                  # Matplotlib axes object where the animation is drawn
-    time_grid               : np.ndarray                # Master time grid array for the entire simulation
-    poses                   : np.ndarray                # 3D numpy array holding all aircraft poses over time (4 x K x N)
-    sample_indices          : List[int]                 # List of indices into the time_grid, one for each animation frame
-    aircraft_artists        : List[Dict]                # List of dictionaries, each holding all matplotlib artists for one aircraft
-    sensor_list             : List[Any]                 # List of sensor configuration objects from the simulator.
-    pointcloud_states       : List[Dict]                # List of state dictionaries for rendering sensor point clouds (clutter/detections)
-    sensor_data_map         : List[Dict]                # Pre-processed map for fast lookup of sensor data by time index
-    config                  : Dict                      # Main configuration dictionary containing all rendering settings
-    num_sensors             : int                       # Total number of sensors in the simulation
-    start_time              : float                     # Simulation start time in seconds, used for the title display.
-    n_frames                : int                       # Total number of frames to be rendered in the final animation.
-    aircraft_id_to_idx_map  : Dict[int, int]            # Mapping from a unique aircraft ID to its corresponding index in data arrays
-    sensor_alphas_np        : np.ndarray                # Numpy array of alpha (transparency) values, one for each sensor
-    aircraft_alphas_np      : np.ndarray                # Numpy array of alpha (transparency) values, one for each aircraft
+    ax                            : plt.Axes                  # Matplotlib axes object where the animation is drawn
+    time_grid                     : np.ndarray                # Master time grid array for the entire simulation
+    poses                         : np.ndarray                # 3D numpy array holding all extended object poses over time (4 x K x N)
+    sample_indices                : List[int]                 # List of indices into the time_grid, one for each animation frame
+    extended_object_artists       : List[Dict]                # List of dictionaries, each holding all matplotlib artists for one extended object
+    sensor_list                   : List[Any]                 # List of sensor configuration objects from the simulator.
+    pointcloud_states             : List[Dict]                # List of state dictionaries for rendering sensor point clouds (clutter/detections)
+    sensor_data_map               : List[Dict]                # Pre-processed map for fast lookup of sensor data by time index
+    config                        : Dict                      # Main configuration dictionary containing all rendering settings
+    num_sensors                   : int                       # Total number of sensors in the simulation
+    start_time                    : float                     # Simulation start time in seconds, used for the title display.
+    n_frames                      : int                       # Total number of frames to be rendered in the final animation.
+    extended_object_id_to_idx_map : Dict[int, int]            # Mapping from a unique extended object ID to its corresponding index in data arrays
+    sensor_alphas_np              : np.ndarray                # Numpy array of alpha (transparency) values, one for each sensor
+    extended_object_alphas_np     : np.ndarray                # Numpy array of alpha (transparency) values, one for each extended object
 
 # ==============================================================================
 # SECTION 3: MAIN RENDERING ENGINE
@@ -75,29 +75,30 @@ def render_animation(simulator: 'Simulator', config: dict):
     print("Rendering engine started...")
 
     # --- Step 1: Unpack Data and Config ---
-    aircraft_list   = simulator.aircraft                                                            # Extract the list of aircraft objects from the simulator
-    sensor_list     = simulator.sensors                                                             # Extract the list of sensor objects from the simulator
-    shape_library   = simulator.shape_library                                                       # Extract the library of aircraft polygon shapes
-    time_grid       = simulator.time_grid                                                           # Extract the master time grid for the entire simulation
+    extended_object_list = simulator.extended_objects                                               # Extract the list of extended object objects from the simulator
+    sensor_list          = simulator.sensors                                                        # Extract the list of sensor objects from the simulator
+    shape_library        = simulator.shape_library                                                  # Extract the library of extended object polygon shapes
+    time_grid            = simulator.time_grid                                                      # Extract the master time grid for the entire simulation
 
-    print(f"Rendering {len(aircraft_list)} aircraft and {len(sensor_list)} sensors.")
+    print(f"Rendering {len(extended_object_list)} extended objects and {len(sensor_list)} sensors.")
 
     # --- Step 2: Prepare Data for Animation ---
-    num_aircraft = len(aircraft_list)                                                               # Get the total number of aircraft in the simulation
-    num_sensors  = len(sensor_list)                                                                 # Get the total number of sensors in the simulation
-    K            = len(time_grid)                                                                   # Get the total number of time steps in the simulation
+    num_extended_objects = len(extended_object_list)                                                # Get the total number of extended objects in the simulation
+    num_sensors          = len(sensor_list)                                                         # Get the total number of sensors in the simulation
+    K                    = len(time_grid)                                                           # Get the total number of time steps in the simulation
     
-    poses = np.full((4, K, num_aircraft), np.nan)                                                   # Initialize the main poses array with NaNs for missing data
-    for n, ac in enumerate(aircraft_list):                                                          # Iterate through each aircraft to populate the main poses array
-        L               = ac.aligned_track.shape[1]                                                 # Get the length of the current aircraft's aligned track
-        poses[:, :L, n] = ac.aligned_track                                                          # Copy the aligned track into the main poses array
+    poses = np.full((4, K, num_extended_objects), np.nan)                                           # Initialize the main poses array with NaNs for missing data
+    for n, eo in enumerate(extended_object_list):                                                   # Iterate through each extended object to populate the main poses array
+        L               = eo.aligned_track.shape[1]                                                 # Get the length of the current extended object's aligned track
+        poses[:, :L, n] = eo.aligned_track                                                          # Copy the aligned track into the main poses array
     
-    censor_map              = {'null': 1.0, 'mild': 0.3, 'total': 0.0}                              # Define a mapping from censorship levels to transparency values
-    sensor_alphas           = [censor_map.get(level, 1.0) 
-                                for level in config['sensor_censor_levels']]                        # Create a list of alpha values, one for each sensor
-    aircraft_alphas         = [censor_map.get(level, 1.0) * config.get('alpha', 1.0) 
-                                for level in config['aircraft_censor_levels']]                      # Create a list of alpha values, one for each aircraft
-    aircraft_id_to_idx_map  = {ac.identifier: i for i, ac in enumerate(aircraft_list)}              # Create a mapping from aircraft ID to index in the poses array
+    censor_map                    = {'null': 1.0, 'mild': 0.3, 'total': 0.0}                        # Define a mapping from censorship levels to transparency values
+    sensor_alphas                 = [censor_map.get(level, 1.0) 
+                                        for level in config['sensor_censor_levels']]                # Create a list of alpha values, one for each sensor
+    extended_object_alphas        = [censor_map.get(level, 1.0) * config.get('alpha', 1.0) 
+                                        for level in config['extended_object_censor_levels']]       # Create a list of alpha values, one for each extended object
+    extended_object_id_to_idx_map = {eo.identifier: i for i, eo in enumerate(extended_object_list)} # Create a mapping from extended object ID to index in the poses array
+
 
 
     # --- Step 3: Figure and Axes Setup ---
@@ -105,13 +106,13 @@ def render_animation(simulator: 'Simulator', config: dict):
     _setup_axes(ax, config['SPINE_LENGTH'])                                                         # Configure the axes properties 
 
     # --- Step 4: Create All Visual Artists ---
-    aircraft_artists    = [_create_aircraft_artists(ax, ac, poses[:, 0, n], 
-                                                    shape_library, 
-                                                    config['aircraft_colors'][n], 
-                                                    aircraft_alphas[n], 
-                                                    config.get('linewidth', 3.0), K)
-                           for n, ac in enumerate(aircraft_list)]                                   # Create all artists (polygons, lines) for each aircraft
-    pointcloud_states   = [_create_pointcloud_artists(ax) for _ in sensor_list]                     # Create artists and state containers for sensor data 
+    extended_object_artists = [_create_extended_object_artists(ax, eo, poses[:, 0, n], 
+                                                               shape_library, 
+                                                               config['extended_object_colors'][n], 
+                                                               extended_object_alphas[n], 
+                                                               config.get('linewidth', 3.0), K)
+                               for n, eo in enumerate(extended_object_list)]                        # Create all artists (polygons, lines) for each extended object
+    pointcloud_states       = [_create_pointcloud_artists(ax) for _ in sensor_list]                 # Create artists and state containers for sensor data 
 
     for s_idx, sensor in enumerate(sensor_list):                                                    # Iterate through sensors to create their Field of View artists
         if sensor_alphas[s_idx] > 0:                                                                # Only create an artist if the sensor is not fully transparent
@@ -128,21 +129,21 @@ def render_animation(simulator: 'Simulator', config: dict):
     
     # --- Step 6: Create the RenderState Object ---
     render_state = _RenderState(                                                                    # Instantiate the render state dataclass with all necessary data
-        ax                      = ax,                                                               # Matplotlib Axes object
-        time_grid               = time_grid,                                                        # Master time grid
-        poses                   = poses,                                                            # 3D array of all aircraft poses
-        sample_indices          = sample_indices,                                                   # List of time indices for each frame
-        aircraft_artists        = aircraft_artists,                                                 # List of aircraft artist dictionaries
-        sensor_list             = sensor_list,                                                      # List of sensor objects
-        pointcloud_states       = pointcloud_states,                                                # List of point cloud artist state containers
-        sensor_data_map         = _create_sensor_data_map(sensor_list, time_grid, K),               # Pre-processed sensor data map for fast lookup
-        config                  = config,                                                           # Configuration dictionary
-        num_sensors             = num_sensors,                                                      # Total number of sensors
-        start_time              = time_grid[0],                                                     # Simulation start time
-        n_frames                = n_frames,                                                         # Total number of frames to render
-        sensor_alphas_np        = np.array(sensor_alphas),                                          # Numpy array of sensor alpha values    
-        aircraft_alphas_np      = np.array(aircraft_alphas),                                        # Numpy array of aircraft alpha values
-        aircraft_id_to_idx_map  = aircraft_id_to_idx_map                                            # Mapping from aircraft IDs to their indices
+        ax                            = ax,                                                         # Matplotlib Axes object
+        time_grid                     = time_grid,                                                  # Master time grid
+        poses                         = poses,                                                      # 3D array of all extended object poses
+        sample_indices                = sample_indices,                                             # List of time indices for each frame
+        extended_object_artists       = extended_object_artists,                                    # List of extended object artist dictionaries
+        sensor_list                   = sensor_list,                                                # List of sensor objects
+        pointcloud_states             = pointcloud_states,                                          # List of point cloud artist state containers
+        sensor_data_map               = _create_sensor_data_map(sensor_list, time_grid, K),         # Pre-processed sensor data map for fast lookup
+        config                        = config,                                                     # Configuration dictionary
+        num_sensors                   = num_sensors,                                                # Total number of sensors
+        start_time                    = time_grid[0],                                               # Simulation start time
+        n_frames                      = n_frames,                                                   # Total number of frames to render
+        sensor_alphas_np              = np.array(sensor_alphas),                                    # Numpy array of sensor alpha values    
+        extended_object_alphas_np     = np.array(extended_object_alphas),                           # Numpy array of extended object alpha values
+        extended_object_id_to_idx_map = extended_object_id_to_idx_map                               # Mapping from extended object IDs to their indices
     )
 
     anim = FuncAnimation(fig, _update_frame, frames = n_frames, fargs = (render_state,),
@@ -168,7 +169,7 @@ def render_animation(simulator: 'Simulator', config: dict):
 def _init_artists(state: _RenderState):
     """Initializes all artists for blitting."""
     artists = [state.ax.title]                                                                      # Start the list of artists with the plot title
-    for art in state.aircraft_artists: artists.extend([art['poly'], art['lc']])                     # Add all aircraft polygons and line collections to the list
+    for art in state.extended_object_artists: artists.extend([art['poly'], art['lc']])              # Add all extended object polygons and line collections to the list
     for s in state.pointcloud_states:                                                               # Add all sensor data artists to the list
         artists.extend([s['clutter_artist'], s['detection_artist']])
     return tuple(artists)                                                                           # Return a tuple of all artists to be managed by the animation
@@ -177,7 +178,7 @@ def _update_frame(frame, state: _RenderState):
     """The main animation callback function, executed for each frame."""
     sample_idx   = state.sample_indices[frame]                                                      # Get the corresponding time index for this frame
     
-    _update_all_aircraft(state, sample_idx, frame)                                                  # Update the position and track of every aircraft
+    _update_all_extended_objects(state, sample_idx, frame)                                          # Update the position and track of every extended object
     _update_all_pointclouds(state, sample_idx)                                                      # Update the point clouds for every sensor
     _update_title(state.ax, frame, state.n_frames,                                                  # Update the title with current time and frame info
                   state.start_time + sample_idx * (state.time_grid[1] - state.time_grid[0]))
@@ -202,22 +203,23 @@ def _create_sensor_fov_artist(ax, sensor, color, alpha):
     ax.plot(center[0], center[1], 'o', markersize = 5, 
             color = color, zorder = 2, alpha = alpha)                                               # Add a marker for the sensor's physical position
 
-def _create_aircraft_artists(ax, aircraft, init_pose, shape_library, color, alpha, lw, K):
-    """Creates a dictionary of artists and state for a single aircraft."""
-    poly_verts, _   = _get_aircraft_frame(init_pose, shape_library[aircraft.shape_idx])             # Get the initial polygon vertices for the aircraft shape
+def _create_extended_object_artists(ax, extended_object, init_pose, shape_library, color, alpha, lw, K):
+    """Creates a dictionary of artists and state for a single extended object."""
+    poly_verts, _   = _get_extended_object_frame(init_pose, 
+                                                 shape_library[extended_object.shape_idx])          # Get the initial polygon vertices for the extended object shape
     poly            = Polygon(poly_verts.T, closed = True, 
-                              facecolor = color, alpha = alpha, zorder = 10)                        # Create the main Polygon artist for the aircraft body
-    lc              = LineCollection([], colors=[(*color, alpha)], linewidth=lw, zorder=5)          # Create an empty LineCollection for the aircraft's track
+                              facecolor = color, alpha = alpha, zorder = 10)                        # Create the main Polygon artist for the extended object body
+    lc              = LineCollection([], colors = [(*color, alpha)], linewidth = lw, zorder = 5)    # Create an empty LineCollection for the extended object's track
     ax.add_patch(poly)                                                                              # Add the polygon to the plot axes
     ax.add_collection(lc)                                                                           # Add the line collection to the plot axes
     return {
-        'poly'          : poly,                                                                     # The Polygon artist for the aircraft's body
-        'lc'            : lc,                                                                       # The LineCollection artist for the track
-        'aircraft_shape': shape_library[aircraft.shape_idx],                                        # The raw vertex data for the aircraft's shape
-        'buffer'        : np.zeros((K * 2, 2), dtype=float),                                        # A pre-allocated buffer to store track points efficiently
-        'buf_len'       : 0,                                                                        # The current number of points in the buffer
-        'segments'      : [],                                                                       # A list to hold finalized track segments
-        'was_visible'   : not np.isnan(init_pose[0])                                                # A flag to track visibility state across frames
+        'poly'                  : poly,                                                             # The Polygon artist for the extended object's body
+        'lc'                    : lc,                                                               # The LineCollection artist for the track
+        'extended_object_shape' : shape_library[extended_object.shape_idx],                         # The raw vertex data for the extended object's shape
+        'buffer'                : np.zeros((K * 2, 2), dtype = float),                              # A pre-allocated buffer to store track points efficiently
+        'buf_len'               : 0,                                                                # The current number of points in the buffer
+        'segments'              : [],                                                               # A list to hold finalized track segments
+        'was_visible'           : not np.isnan(init_pose[0])                                        # A flag to track visibility state across frames
     }
 
 def _create_pointcloud_artists(ax):
@@ -237,16 +239,16 @@ def _create_pointcloud_artists(ax):
 # SECTION 6: ARTIST UPDATE HELPERS
 # ==============================================================================
 
-def _update_all_aircraft(state: _RenderState, sample_idx, frame):
-    """Updates all aircraft polygons and tracks for the current frame."""
-    for n, art in enumerate(state.aircraft_artists):
-        pose        = state.poses[:, sample_idx, n]                                                 # Get the current pose [x, y, heading, speed] for this aircraft
-        is_visible  = not np.isnan(pose[0])                                                         # Determine if the aircraft is visible (not NaN)
+def _update_all_extended_objects(state: _RenderState, sample_idx, frame):
+    """Updates all extended object polygons and tracks for the current frame."""
+    for n, art in enumerate(state.extended_object_artists):
+        pose        = state.poses[:, sample_idx, n]                                                 # Get the current pose [x, y, heading, speed] for this extended object
+        is_visible  = not np.isnan(pose[0])                                                         # Determine if the extended object is visible (not NaN)
         
-        _update_aircraft_track(art, pose[:2], is_visible)                                           # Update the aircraft's track data with the new position
+        _update_extended_object_track(art, pose[:2], is_visible)                                    # Update the extended object's track data with the new position
         
         if is_visible:
-            _update_aircraft_polygon(art, pose)                                                     # If visible, update the polygon's position and orientation
+            _update_extended_object_polygon(art, pose)                                              # If visible, update the polygon's position and orientation
         else:
             art['poly'].set_visible(False)                                                          # If not visible, hide the polygon artist
         art['was_visible'] = is_visible                                                             # Store the current visibility state for the next frame's logic
@@ -256,17 +258,17 @@ def _update_all_aircraft(state: _RenderState, sample_idx, frame):
                                      state.config.get('min_linewidth', 0.3), 
                                      state.config.get('linewidth', 3.0))
 
-def _update_aircraft_polygon(art, pose):
-    """Updates a single aircraft's polygon to a new pose."""
+def _update_extended_object_polygon(art, pose):
+    """Updates a single extended object's polygon to a new pose."""
     if not art['poly'].get_visible():                                                               # If the polygon was previously hidden, make it visible
         art['poly'].set_visible(True)
-    verts, _ = _get_aircraft_frame(pose, art['aircraft_shape'])                                     # Calculate the new vertex positions based on the current pose
+    verts, _ = _get_extended_object_frame(pose, art['extended_object_shape'])                       # Calculate the new vertex positions based on the current pose
     art['poly'].set_xy(verts.T)                                                                     # Set the new vertices for the polygon artist
 
-def _update_aircraft_track(art, point, is_visible):
-    """Updates the track data for a single aircraft, handling fragmentation."""
+def _update_extended_object_track(art, point, is_visible):
+    """Updates the track data for a single extended object, handling fragmentation."""
     if is_visible:
-        if not art['was_visible']:                                                                  # If the aircraft just reappeared after being hidden...
+        if not art['was_visible']:                                                                  # If the extended object just reappeared after being hidden...
             art['segments'].append((-1, -1, 0))                                                     # ...add a "break" segment to create a gap in the track line
         
         idx = art['buf_len']                                                                        # Get the index for the new point in the buffer.
@@ -443,16 +445,16 @@ def _setup_axes(ax, spine_length, bg_color=(0.15, 0.21, 0.23), text_color='white
     ax.title.set_color(text_color)                                                                  # Set the color of the main plot title
     for spine in ax.spines.values(): spine.set_edgecolor(text_color)                                # Set the color of the plot borders (the "spines")
 
-def _get_aircraft_frame(pose, aircraft_shape):
-    """Computes the world coordinates of an aircraft's polygon vertices."""
-    x, y, heading, _                = pose                                                          # Unpack the aircraft's current position and heading
-    S                               = aircraft_shape['shapeMatrix']                                 # Get the local-frame shape matrix for the aircraft
-    verts                           = np.empty((2, S.shape[1] * 2), dtype = float)                  # Pre-allocate an array to hold the vertices.
-    verts[:, 0::2], verts[:, 1::2]  = S[0:2, :], S[2:4, :]                                          # Unpack the shape matrix into a standard (2, N) vertex array
+def _get_extended_object_frame(pose, extended_object_shape):
+    """Computes the world coordinates of an extended object's polygon vertices."""
+    x, y, heading, _                = pose                                                          # Unpack the extended object's current position and heading
+    contourShapeMatrix              = extended_object_shape['contourShapeMatrix']                   # Get the local-frame shape matrix for the extended object
+    verts                           = np.empty((2, contourShapeMatrix.shape[1] * 2), dtype = float) # Pre-allocate an array to hold the vertices.
+    verts[:, 0::2], verts[:, 1::2]  = contourShapeMatrix[0:2, :], contourShapeMatrix[2:4, :]        # Unpack the shape matrix into a standard (2, N) vertex array
     c, s                            = np.cos(heading), np.sin(heading)                              # Calculate the cosine and sine of the heading for rotation
     R                               = np.array([[c, -s], [s, c]])                                   # Construct the 2D rotation matrix
     rotated_verts                   = R @ verts                                                     # Rotate the local-frame vertices
-    world_verts                     = rotated_verts + np.array([[x], [y]])                          # Translate rotated vertices to aircraft's world position
+    world_verts                     = rotated_verts + np.array([[x], [y]])                          # Translate rotated vertices to extended object's world position
     return world_verts, np.array([x, y])                                                            # Return final world-frame vertices and center position
 
 def _color_to_rgba(color, alpha):
@@ -508,10 +510,5 @@ def _create_sensor_data_map(sensor_list, time_grid, K):
                 if sim_idx < K: index_map[sim_idx] = meas_idx                                   # If the index is valid, add the mapping
         sensor_data_map.append(index_map)                                                       # Add the completed map for this sensor to the main list
     return sensor_data_map                                                                      # Return the list of lookup maps
-
-
-
-
-
 
 
