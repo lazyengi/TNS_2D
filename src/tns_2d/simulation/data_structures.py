@@ -69,7 +69,7 @@ class Sensor:
     """
     # --- Configuration ---
     identifier          : int                                                   # (1) Unique identifier for the sensor
-    generation_mode     : str                                                   # (2) Measurement generation type ("center", "contour" or "surface")
+    generation_mode     : str                                                   # (2) "contour", "surface", or "center". Line-of-sight applies only to "contour"
     position            : np.ndarray                                            # (3) Sensor's static position as a NumPy array [x, y] in meters
     heading             : float                                                 # (4) Sensor's orientation (boresight direction) in radians
 
@@ -83,14 +83,14 @@ class Sensor:
     pd                  : float                                                 # (9) Probability of Detection (0.0 to 1.0)
     clutter_rate        : float                                                 # (10) Average number of false alarms (clutter) per square meter
     sigma_v             : float                                                 # (11) Standard deviation of measurement noise   [m]
-    resolution          : float                                                 # (12) Detection per unit length                 [m^-1]
+    resolution          : float                                                 # (12) Contour: detections per meter. Surface: per square meter. Unused by center.
 
     # Timing
     dt_sample           : float                                                 # (13) Time between sensor measurements (sampling period)    [s]
     t_offset            : float                                                 # (14) Initial time delay for the first measurement          [s]
 
     # Dropout model parameters (optional, for stateful dropout)
-    alpha               : float = None                                          # Markov chain transition probability for dropouts
+    alpha               : float | None = None                                   # Markov persistence of the active state. None selects independent Bernoulli scans.
 
     # --- Simulation Results (to be populated by the Simulator class) ---
     dataset             : dict = field(init = False, default_factory = dict)    # Dictionary to store all generated measurements and labels

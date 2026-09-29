@@ -1,5 +1,4 @@
 numpy
-pandas
 matplotlib
 tqdm
 h5py

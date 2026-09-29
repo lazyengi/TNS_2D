@@ -172,7 +172,7 @@ simulation_config    = {
     'spine_length'     : SPINE_LENGTH,
     'max_duration'     : 60.0,  
     'use_dropouts'     : True,
-    'use_los'          : True,
+    'use_los'          : False,                                                         # Contour-only. These sensors use generation_mode "center".
     'use_oor'          : True,
     'verbose'          : True
 }
@@ -196,6 +196,10 @@ rendering_config = {
     'FIGSIZE'                      : (16, 9),
     'DPI'                          : 120,
     'FPS'                          : 60,
+    # Preview encode. For an archive file use ENCODER_CRF 0, ENCODER_PRESET 'veryslow', ENCODER_PIX_FMT 'yuv444p'.
+    'ENCODER_CRF'                  : 18,
+    'ENCODER_PRESET'               : 'veryfast',
+    'ENCODER_PIX_FMT'              : 'yuv420p',
 }
 
 # ==============================================================================
