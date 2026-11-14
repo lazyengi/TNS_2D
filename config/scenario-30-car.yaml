@@ -26,7 +26,7 @@ simulation:
   verbose: true
 
 vehicles:
-  count: 2
+  count: 1
   profile: car
   # In alternativa, un profilo per mezzo (e use_profile_arena: false se le classi differiscono):
   # profiles: [drone, car]
