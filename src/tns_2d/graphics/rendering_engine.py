@@ -151,8 +151,10 @@ def render_animation(simulator: 'Simulator', config: dict):
                          interval = 1000 / FPS, blit = True)                                        # Create the main animation object
 
     # --- Step 7: Save Animation ---
-    writer = FFMpegWriter(fps = FPS, codec = 'libx264',                                             # Configure the video writer with high-quality settings
-                          extra_args = ['-pix_fmt', 'yuv444p', '-crf', '0', '-preset', 'veryslow'])
+    writer = FFMpegWriter(fps = FPS, codec = 'libx264',
+                          extra_args = ['-pix_fmt', str(config.get('ENCODER_PIX_FMT', 'yuv420p')),
+                                        '-crf', str(int(config.get('ENCODER_CRF', 18))),
+                                        '-preset', str(config.get('ENCODER_PRESET', 'veryfast'))])
     with tqdm(total = n_frames, desc = "Rendering frames", unit = "frame") as pbar:                 # Use tqdm to show a progress bar during the rendering process
         anim.save(config['MP4_PATH'], writer = writer, dpi = config.get('DPI', 120), 
                     progress_callback = lambda i, n: pbar.update(1))                                # Save the animation to the specified MP4 file

@@ -1,0 +1,111 @@
+# Scenario di traiettorie casuali, ripetibile tramite seed.
+# Un solo file: qui si scelgono quanti mezzi simulare e, sotto profiles,
+# i limiti di ogni classe (aereo di linea, drone, auto).
+#
+# Lancio, dalla radice del repository, con il Python del venv:
+#   .\.venv\Scripts\python.exe .\scripts\run_scenario.py
+#   .\.venv\Scripts\python.exe .\scripts\run_scenario.py --config config\scenario.yaml
+#
+# L'integratore non cambia: è sempre l'uniciclo del simulatore.
+# Il sorteggio pesca solo stato iniziale e accelerazioni dentro i limiti.
+# Lo stesso seed riproduce le stesse traiettorie.
+#
+# use_profile_arena: true prende spine_length, max_duration e global_dt
+# dall'arena del profilo. Va bene se tutti i mezzi sono della stessa classe.
+# Un aereo di linea in un quadrato da 100 m non è fisicamente coerente:
+# il raggio di virata non ci sta, e lo script si ferma con un errore esplicito.
+
+seed: 42
+shape_library: data/aircraft_shape_library.pkl
+
+simulation:
+  use_profile_arena: true
+  use_dropouts: false
+  use_los: false
+  use_oor: true
+  verbose: true
+
+vehicles:
+  count: 1
+  profile: drone
+  # In alternativa, un profilo per mezzo (e use_profile_arena: false se le classi differiscono):
+  # profiles: [drone, car]
+  t_init_gap: 0.0
+  max_attempts: 40
+
+export:
+  # CSV letto da MATLAB con readtable. null per non scrivere il file.
+  tracks_csv: output/tracks-42-drone.csv
+
+render:
+  # Il video richiede FFmpeg sul PATH. Le traiettorie per MATLAB non ne hanno bisogno.
+  enabled: false
+  mp4_path: output/scenario.mp4
+  fps: 30
+  dpi: 80
+  figsize: [16, 9]
+
+profiles:
+  # Approccio, non crociera: 65–95 m/s, virate larghe (raggio ≥ 1.2 km), niente retromarcia.
+  # L'arena è 16 km di lato perché il raggio di virata deve starci dentro.
+  airliner:
+    shape_idx: 0
+    speed_min: 65.0
+    speed_max: 95.0
+    cruise_speed: 80.0
+    long_accel_min: -0.8
+    long_accel_max: 0.5
+    centr_accel_max: 4.0
+    min_turn_radius: 1200.0
+    max_yaw_rate: 0.04
+    n_waypoints_min: 10
+    n_waypoints_max: 16
+    min_time_in_arena: 60.0
+    allow_reverse: false
+    reduce_speed_in_turn: false
+    arena:
+      spine_length: 8000.0
+      max_duration: 150.0
+      global_dt: 0.2
+
+  # Multirotore: può rallentare fin quasi a fermarsi, non andare in retromarcia, virate strette.
+  drone:
+    shape_idx: 16
+    speed_min: 1.0
+    speed_max: 12.0
+    cruise_speed: 8.0
+    long_accel_min: -3.0
+    long_accel_max: 3.0
+    centr_accel_max: 6.0
+    min_turn_radius: 4.0
+    max_yaw_rate: 1.2
+    n_waypoints_min: 12
+    n_waypoints_max: 18
+    min_time_in_arena: 25.0
+    allow_reverse: false
+    reduce_speed_in_turn: true
+    arena:
+      spine_length: 60.0
+      max_duration: 40.0
+      global_dt: 0.05
+
+  # Auto: può fermarsi, non fare retromarcia, accelerazione laterale da aderenza (~0.4 g).
+  car:
+    shape_idx: 8
+    speed_min: 0.0
+    speed_max: 16.0
+    cruise_speed: 10.0
+    long_accel_min: -4.0
+    long_accel_max: 2.5
+    centr_accel_max: 4.0
+    min_turn_radius: 8.0
+    max_yaw_rate: 0.6
+    n_waypoints_min: 12
+    n_waypoints_max: 18
+    min_time_in_arena: 20.0
+    allow_reverse: false
+    reduce_speed_in_turn: true
+    arena:
+      spine_length: 120.0
+      max_duration: 45.0
+      global_dt: 0.05

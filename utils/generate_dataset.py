@@ -55,8 +55,7 @@ import time
 import matplotlib.pyplot as plt                         
 from matplotlib.patches import Polygon, Circle
 
-from src.tns_2d.simulation.data_structures  import ExtendedObject, Sensor                     
-from src.tns_2d.simulation.simulator        import Simulator    
+from src.tns_2d.simulation.simulator import sample_contour_cloud    
 
 # ==============================================================================
 # SECTION 1: CONFIGURATION
@@ -68,7 +67,7 @@ USE_EXTENDED_OBJECT_COORDINATES   = True                                        
 NUM_EXAMPLES                      = int(1e6)                                            # Defines the total number of data samples to generate
 POSE_DISTANCE                     = 50.0                                                # The fixed or maximum distance between extended object and sensor  [m]
 MIN_DISTANCE                      = 15.0                                                # The minimum distance if randomization is used                     [m]
-DELTA_T                           = 1e-6                                                # Small time step to get an instant snapshot                        [s]
+SCHEMA_VERSION                    = 2                                                   # 1: sensor_pos_ac / use_aircraft_coordinates. 2: sensor_pos_eoc.
 
 # --- Sensor Imperfection Settings ---
 USE_LOS                           = True                                                # Toggles Line-of-Sight simulation (self-occlusions) on or off
@@ -142,58 +141,23 @@ def generate_single_example(shape_library):
     # STEP 3: Selects a random heading between 0 and 2*pi radians
     extended_object_heading = np.random.uniform(0, 2 * np.pi)                            
 
-    # STEP 4. Configure and run a simulation to generate the point cloud
-    extended_object = ExtendedObject(                                                   # Creates an ExtendedObject              
-        identifier          = 0,                                                       
-        shape_idx           = random_shape_idx,                                 
-        t_init              = 0.0,                                              
-        initial_position    = extended_object_position,                                
-        initial_heading     = extended_object_heading,                                 
-        initial_speed       = 0,                                                
-        long_vals           = np.array([0]),                                    
-        long_times          = np.array([DELTA_T]),                              
-        centr_vals          = np.array([0]),                                    
-        centr_times         = np.array([DELTA_T]),                              
-        dt                  = DELTA_T                                           
+    # STEP 4. Sample the contour cloud directly. The object is static, so the
+    # dynamic simulator (trajectory, time grid, simulation square) is not used.
+    shape = shape_library[random_shape_idx]
+    point_cloud_world = sample_contour_cloud(
+        shape['contourShapeMatrix'],
+        extended_object_position,
+        extended_object_heading,
+        np.array([0.0, 0.0]),
+        0.0,
+        resolution = SENSOR_RESOLUTION,
+        sigma_v    = SENSOR_NOISE_STD,
+        los_table  = shape.get('LoSTable'),
+        use_los    = USE_LOS,
+        use_oor    = False,
     )
-
-    sensor = Sensor(                                                                    # Creates a Sensor 
-        identifier          = 0,                                                
-        generation_mode     = "contour",    
-        position            = np.array([0.0, 0.0]),                             
-        heading             = 0.0,                                              
-        max_range           = 1000.0,                                           
-        min_range           = 0.0,                                              
-        min_bearing         = -np.pi,                                           
-        max_bearing         =  np.pi,                                           
-        pd                  = 1.0,                                              
-        clutter_rate        = 0.0,                                              
-        dt_sample           = DELTA_T,                                          
-        t_offset            = 0.0,                                              
-        alpha               = None,                                             
-        resolution          = SENSOR_RESOLUTION,                                
-        sigma_v             = SENSOR_NOISE_STD                                  
-    )
-
-    simulator = Simulator(                                                              # Initializes the Simulator with the scenario objects
-        extended_objects = [extended_object],                                           
-        sensors          = [sensor],                                             
-        shape_library    = shape_library,                                        
-        spine_length     = 60.0,                                                 
-        global_dt        = DELTA_T,                                              
-        max_duration     = DELTA_T * 2,                                          
-        use_dropouts     = False,                                                
-        use_los          = USE_LOS,                                              
-        use_oor          = False,                                                
-        verbose          = False                                                 
-    )
-    simulator.run()                                                                     # Executes the simulation
-
-    sensor_dataset = simulator.sensors[0].dataset                                       # Extracts the point cloud from the sensor
-    if not sensor_dataset['measurements']:                                              # Checks if any measurements were generated
-        return None                                                                     # If not, returns None to indicate failure
-
-    point_cloud_world = sensor_dataset['measurements'][0]                               # Retrieves the point cloud from the first measurement scan
+    if point_cloud_world.shape[0] == 0:
+        return None
     
     if USE_EXTENDED_OBJECT_COORDINATES:
         # STEPS 5 & 6. Express point cloud and sensor position in extended object coordinates
@@ -218,6 +182,20 @@ def generate_single_example(shape_library):
             'sensor_position'           : np.array([0.0, 0.0])
         }
 
+def _metadata_uses_object_frame(metadata):
+    """Read the coordinate-frame flag from schema v2, or from the v1 alias."""
+    if 'use_extended_object_coordinates' in metadata:
+        return bool(metadata['use_extended_object_coordinates'])
+    if 'use_aircraft_coordinates' in metadata:
+        return bool(metadata['use_aircraft_coordinates'])
+    return True
+
+def _sensor_position_in_object_frame(example):
+    """Sensor position in the object frame. v1 datasets stored it as ``sensor_pos_ac``."""
+    if 'sensor_pos_eoc' in example:
+        return example['sensor_pos_eoc']
+    return example['sensor_pos_ac']
+
 def validate_dataset(dataset_path, shape_library_path):                                 # Defines the function for visually validating the dataset
     """Loads a generated dataset and plots random examples for visual validation."""
     print("\nStarting dataset validation...")                                           # Prints a status message to the console
@@ -231,7 +209,7 @@ def validate_dataset(dataset_path, shape_library_path):                         
     
     metadata                 = full_dataset['metadata']                                 # Extracts the metadata dictionary
     dataset                  = full_dataset['data']                                     # Extracts the list of data examples from the loaded dictionary
-    in_extended_object_frame = metadata.get('use_extended_object_coordinates', True)    # Checks the coordinate system from metadata
+    in_extended_object_frame = _metadata_uses_object_frame(metadata)                    # Checks the coordinate system from metadata
     
     # --- Randomly Sample Examples to Show ---
     num_to_show       = min(NUM_VALIDATION_EXAMPLES, len(dataset))                      # Determines how many examples to show (up to the configured max)
@@ -255,7 +233,7 @@ def validate_dataset(dataset_path, shape_library_path):                         
 
         if in_extended_object_frame:
             # --- PLOT IN EXTENDED_OBJECT COORDINATES ---
-            sensor_pos = example['sensor_pos_eoc']                                      # Unpacks the sensor position from the example
+            sensor_pos = _sensor_position_in_object_frame(example)                      # Current key, or the v1 alias sensor_pos_ac
             
             # Plot underlying geometry based on distance setting
             if metadata.get('use_random_distance', False):                              # Checks if random distance was used
@@ -372,6 +350,7 @@ if __name__ == "__main__":                                                      
             dataset.append(example)                                                     # If so, appends the example to the dataset list
 
     metadata = {                                                                        # Creates a dictionary to store all configuration settings
+        'schema_version'                    : SCHEMA_VERSION,
         # Dataset Settings
         'num_examples'                      : NUM_EXAMPLES,
         'pose_distance'                     : POSE_DISTANCE,

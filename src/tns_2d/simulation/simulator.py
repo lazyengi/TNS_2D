@@ -22,9 +22,13 @@ All wrongs reserved.
 """
 
 import numpy as np
-import pandas as pd
 import time
 from .data_structures import ExtendedObject, Sensor
+
+# Line-of-sight flags are consulted only in contour mode. Surface and center
+# detections do not read LoSTable.
+GENERATION_MODES = ("contour", "surface", "center")
+LOS_GENERATION_MODES = frozenset({"contour"})
 
 # ==============================================================================
 # SECTION 1: SIMULATOR CLASS
@@ -47,7 +51,7 @@ class Simulator:
             spine_length (float)                    : Half-length of the simulation area.
             max_duration (float)                    : Maximum allowed duration for the simulation [s]
             use_dropouts (bool, optional)           : If True, simulates sensor dropouts. 
-            use_los (bool, optional)                : If True, simulates Line-of-Sight blockages. 
+            use_los (bool, optional)                : If True, contour-mode sensors apply Line-of-Sight blockages. Surface and center ignore it. 
             use_oor (bool, optional)                : If True, simulates Out-of-Range conditions.
             verbose (bool, optional)                : If True, prints progress information. 
         """
@@ -132,9 +136,7 @@ class Simulator:
             eo.aligned_track[:, unique_indices] = eo.raw_track[:, valid_mask][:, unique_raw_map]        # Place the valid raw data onto the master grid
 
             # --- Step 4a: Housekeeping ---
-            df = pd.DataFrame(eo.aligned_track.T)                                                       # Use a DataFrame for convenient interpolation  
-            df.interpolate(method = 'linear', limit = 1, axis = 0, inplace = True)                      # Linearly interpolate gaps (up to 1 consecutive NaN)
-            eo.aligned_track = df.to_numpy().T                                                          # Convert back to NumPy array
+            _fill_isolated_nans(eo.aligned_track)                                                       # Linearly fill gaps of exactly one NaN
             
             # Normalize the heading angle to ensure it stays within the [-pi, pi) range
             heading_row                 = eo.aligned_track[2, :]                                        # Extract the heading row   
@@ -177,28 +179,31 @@ class Simulator:
                             extended_object_id    = extended_object.identifier                          # Extract extended object identifier
                             extended_object_shape = self.shape_library[extended_object.shape_idx]       # Extract extended object shape information
                             
-                            if sensor.generation_mode == "contour":                                     # Generate detections on the contour      
+                            mode = sensor.generation_mode
+                            if mode not in GENERATION_MODES:
+                                raise ValueError(
+                                    f"Unknown generation_mode {mode!r} for sensor {sensor.identifier}. "
+                                    f"Expected one of {GENERATION_MODES}. "
+                                    "Line-of-sight is applied only when generation_mode is 'contour'."
+                                )
+                            if mode == "contour":
                                 det_points, det_labels = _generate_detections_on_contour(
-                                    extended_object_pose, extended_object_id, sensor, 
+                                    extended_object_pose, extended_object_id, sensor,
                                     extended_object_shape, dropout_status,
-                                    self.use_los, self.use_oor
+                                    self.use_los and mode in LOS_GENERATION_MODES, self.use_oor
                                 )
-                            elif sensor.generation_mode == "surface":                                   # Generate detections on the surface    
+                            elif mode == "surface":
                                 det_points, det_labels = _generate_detections_on_surface(
-                                    extended_object_pose, extended_object_id, sensor, 
+                                    extended_object_pose, extended_object_id, sensor,
                                     extended_object_shape, dropout_status,
-                                    self.use_los, self.use_oor
-                                )
-                            elif sensor.generation_mode == "center":                                    # Generate detection at the center   
-                                det_points, det_labels = _generate_detections_on_center(
-                                    extended_object_pose, extended_object_id, sensor, 
-                                    extended_object_shape, dropout_status,
-                                    self.use_los, self.use_oor
+                                    self.use_oor
                                 )
                             else:
-                                print(f"Warning: Unknown generation_mode '{sensor.generation_mode}' "
-                                      f"for sensor {sensor.identifier}. No detections will be generated.")
-                                det_points, det_labels = np.empty((0, 2)), np.empty(0, dtype=int)
+                                det_points, det_labels = _generate_detections_on_center(
+                                    extended_object_pose, extended_object_id, sensor,
+                                    extended_object_shape, dropout_status,
+                                    self.use_oor
+                                )
 
                             if det_points.size > 0:                                                     # Check if there are detection points
                                 all_points.append(det_points)                                           # Append detection points
@@ -338,56 +343,86 @@ def _generate_clutter(sensor: Sensor):
 # SECTION 3: CONTOUR DETECTION GENERATION FUNCTIONS
 # ==============================================================================
 
-def _generate_detections_on_contour(extended_object_pose: np.ndarray, extended_object_id: int, 
-                         sensor: Sensor, extended_object_shape: dict, 
-                         dropout_status: float, use_los: bool, use_oor: bool):
+def sample_contour_cloud(contour_shape_matrix: np.ndarray,
+                         object_position: np.ndarray,
+                         object_heading: float,
+                         sensor_position: np.ndarray,
+                         sensor_heading: float,
+                         resolution: float,
+                         sigma_v: float,
+                         los_table: dict | None = None,
+                         use_los: bool = True,
+                         use_oor: bool = False,
+                         min_range: float = 0.0,
+                         max_range: float = np.inf,
+                         min_bearing: float = -np.pi,
+                         max_bearing: float = np.pi,
+                         gate: float = 1.0) -> np.ndarray:
+    """Sample a contour detection cloud in the world frame.
+
+    This is the measurement kernel shared by the dynamic simulator and the
+    static dataset generator. ``gate`` is the scan activity (1 active, 0 dropped)
+    and scales every edge rate. An empty ``(0, 2)`` array means no detections.
+    """
+    n_edges = contour_shape_matrix.shape[1]
+    if n_edges == 0 or gate == 0.0:
+        return np.empty((0, 2))
+
+    object_pose = np.array([object_position[0], object_position[1], object_heading], dtype=float)
+    sensor_pose = np.array([sensor_position[0], sensor_position[1], sensor_heading], dtype=float)
+    edge_starts_world = _roto_translate(contour_shape_matrix[:2, :].T, object_pose)
+    edge_ends_world = _roto_translate(contour_shape_matrix[2:4, :].T, object_pose)
+    edge_lengths = contour_shape_matrix[4, :]
+
+    if use_oor:
+        edge_centers_world = (edge_starts_world + edge_ends_world) / 2.0
+        edge_centers_sensor = _roto_translate(edge_centers_world, sensor_pose, inverse=True)
+        oor_flags = _compute_oor_flags(edge_centers_sensor, min_range, max_range, min_bearing, max_bearing)
+    else:
+        oor_flags = 1
+
+    if use_los and los_table is not None:
+        los_flags = _compute_los_flags(object_pose, sensor_pose, los_table)
+    else:
+        los_flags = 1
+
+    lambda_i = resolution * edge_lengths * los_flags * oor_flags * gate
+    total_lambda = float(np.sum(lambda_i))
+    if total_lambda == 0.0:
+        return np.empty((0, 2))
+
+    n_measurements = int(np.random.poisson(total_lambda))
+    if n_measurements == 0:
+        return np.empty((0, 2))
+
+    edge_probs = lambda_i / np.sum(lambda_i)
+    selected = np.random.choice(n_edges, size=n_measurements, p=edge_probs)
+    return _sample_measurements_on_contour(edge_starts_world[selected], edge_ends_world[selected], sigma_v)
+
+
+def _generate_detections_on_contour(extended_object_pose: np.ndarray, extended_object_id: int,
+                                    sensor: Sensor, extended_object_shape: dict,
+                                    dropout_status: float, use_los: bool, use_oor: bool):
     """Generates a point cloud of true detections on an extended object's contour."""
-    # --- Unpack Extended Object Shape Information ---
-    contourShapeMatrix  = extended_object_shape['contourShapeMatrix']                                   # Shape matrix defining the extended object's geometry
-    los_table           = extended_object_shape.get('LoSTable')                                         # Line-of-Sight table
-    n_edges             = contourShapeMatrix.shape[1]                                                   # Number of edges in the shape
-    
-    # --- Compute Edge Positions in World Frame ---
-    edge_starts_local   = contourShapeMatrix[:2, :].T                                                   # Edge start points in extended object frame
-    edge_ends_local     = contourShapeMatrix[2:4, :].T                                                  # Edge end points in extended object frame
-    edge_lengths        = contourShapeMatrix[4, :]                                                      # Edge lengths
-
-    # --- Compute Flags and Detection Rates ---
-    sensor_pose_vec     = np.array([sensor.position[0], sensor.position[1], sensor.heading])            # Sensor pose in world frame
-    edge_starts_world   = _roto_translate(edge_starts_local, extended_object_pose)                      # Edge start points in world frame
-    edge_ends_world     = _roto_translate(edge_ends_local, extended_object_pose)                        # Edge end points in world frame
-    edge_centers_world  = (edge_starts_world + edge_ends_world) / 2                                     # Edge center points in world frame
-    edge_centers_sensor = _roto_translate(edge_centers_world, sensor_pose_vec, inverse=True)            # Edge center points in sensor frame
-
-    if use_oor:                                                                                         # If OoR is enabled...
-        oor_flags = _compute_oor_flags(edge_centers_sensor, sensor.min_range, 
-                                        sensor.max_range, sensor.min_bearing, 
-                                        sensor.max_bearing)                                             # ...compute Out-of-Range flags
-    else: oor_flags = np.ones(n_edges, dtype = int)                                                     # otherwise assume all edges are in range
-    
-    if use_los and los_table is not None:                                                               # If LoS is enabled and the table is provided...                         
-        los_flags = _compute_los_flags(extended_object_pose, sensor_pose_vec, los_table)                # ...compute Line-of-Sight flags
-    else: los_flags = np.ones(n_edges, dtype = int)                                                     # otherwise assume all edges are in LoS
-
-    lambda_i            = sensor.resolution * edge_lengths * los_flags * oor_flags * dropout_status     # Expected detections per edge
-    total_lambda        = np.sum(lambda_i)                                                              # Total expected detections across all edges
-
-    # --- Sample Detections Based on Poisson Process ---
-    if total_lambda == 0: return np.empty((0, 2)), np.empty(0, dtype = int)                             # Return empty arrays if no detections possible
-
-    n_measurements = np.random.poisson(total_lambda)                                                    # Actual number of detections (Poisson distributed)
-    if n_measurements == 0: return np.empty((0, 2)), np.empty(0, dtype = int)                           # Return empty arrays if no detections sampled
-
-    edge_probs      = lambda_i / total_lambda                                                           # Probability of selecting each edge
-    selected_edges  = np.random.choice(n_edges, size = n_measurements, p = edge_probs)                  # Sample edges based on probabilities
-    points          = [                                                                                 # Sample points along each selected edges              
-                        _sample_measurement_on_contour(edge_starts_world[i], 
-                                                       edge_ends_world[i], sensor.sigma_v)          
-                        for i in selected_edges
-                        ]    
-    labels          = np.full(n_measurements, extended_object_id, dtype = int)                          # Labels for each detection point (extended object ID)
-
-    return np.array(points), labels
+    points = sample_contour_cloud(
+        extended_object_shape['contourShapeMatrix'],
+        extended_object_pose[:2],
+        float(extended_object_pose[2]),
+        sensor.position,
+        sensor.heading,
+        sensor.resolution,
+        sensor.sigma_v,
+        los_table=extended_object_shape.get('LoSTable'),
+        use_los=use_los,
+        use_oor=use_oor,
+        min_range=sensor.min_range,
+        max_range=sensor.max_range,
+        min_bearing=sensor.min_bearing,
+        max_bearing=sensor.max_bearing,
+        gate=dropout_status,
+    )
+    labels = np.full(points.shape[0], extended_object_id, dtype=int)
+    return points, labels
 
 def _compute_los_flags(extended_object_pose, sensor_pose, los_table):
     """Computes Line-of-Sight flags using a pre-computed visibility table."""
@@ -407,21 +442,25 @@ def _compute_oor_flags(feature_centers_sensor, min_r, max_r, min_b, max_b):
     return ((ranges >= min_r) & (ranges <= max_r) & \
             (bearings >= min_b) & (bearings <= max_b)).astype(int)                                      # Return OOR flags for all features
 
-def _sample_measurement_on_contour(edge_start: np.ndarray, edge_end: np.ndarray, sigma_v: float):
-    """Samples a single noisy measurement point along a specified edge."""
-    u               = np.random.uniform()                                                               # Sample a uniform [0, 1]
-    point_on_edge   = (1 - u) * edge_start + u * edge_end                                               # Interpolate point along the edge 
-    noise           = np.random.normal(scale = sigma_v, size = 2)                                       # Add Gaussian noise to the point
-    return point_on_edge + noise
+def _sample_measurements_on_contour(edge_starts: np.ndarray, edge_ends: np.ndarray, sigma_v: float):
+    """Sample one noisy point on each provided edge. ``edge_*`` have shape ``(N, 2)``."""
+    if edge_starts.shape[0] == 0:
+        return np.empty((0, 2))
+    abscissa = np.random.uniform(size=edge_starts.shape[0])
+    points = (1.0 - abscissa)[:, None] * edge_starts + abscissa[:, None] * edge_ends
+    return points + np.random.normal(scale=sigma_v, size=points.shape)
 
 # ==============================================================================
 # SECTION 4: SURFACE DETECTION GENERATION FUNCTIONS
 # ==============================================================================
 
-def _generate_detections_on_surface(extended_object_pose: np.ndarray, extended_object_id: int, 
-                                    sensor: Sensor, extended_object_shape: dict, 
-                                    dropout_status: float, use_los: bool, use_oor: bool):
-    """Generates a point cloud of true detections on an extended object's surface."""
+def _generate_detections_on_surface(extended_object_pose: np.ndarray, extended_object_id: int,
+                                    sensor: Sensor, extended_object_shape: dict,
+                                    dropout_status: float, use_oor: bool):
+    """Generates a point cloud of true detections on an extended object's surface.
+
+    Line-of-sight is not applied: only contour mode consults ``LoSTable``.
+    """
     # (1) Unpack shape information
     surfaceShapeMatrix = extended_object_shape.get('surfaceShapeMatrix')
     if surfaceShapeMatrix is None or surfaceShapeMatrix.size == 0:
@@ -464,41 +503,39 @@ def _generate_detections_on_surface(extended_object_pose: np.ndarray, extended_o
     if n_measurements == 0:
         return np.empty((0, 2)), np.empty(0, dtype=int)
 
-    triangle_probs   = lambda_i / total_lambda
+    triangle_probs   = lambda_i / np.sum(lambda_i)
     selected_tris    = np.random.choice(n_triangles, size=n_measurements, p=triangle_probs)
-    
-    # --- Sample points within each selected triangle ---
-    points = [
-        _sample_measurement_on_triangle(v0_world[i], v1_world[i], v2_world[i], sensor.sigma_v)
-        for i in selected_tris
-    ]
+    points = _sample_measurements_on_triangles(
+        v0_world[selected_tris], v1_world[selected_tris], v2_world[selected_tris], sensor.sigma_v
+    )
     labels = np.full(n_measurements, extended_object_id, dtype=int)
+    return points, labels
 
-    return np.array(points), labels
-
-def _sample_measurement_on_triangle(v0: np.ndarray, v1: np.ndarray, v2: np.ndarray, sigma_v: float):
-    """Samples a single noisy measurement point uniformly within a specified triangle."""
-    # --- Generate two uniform random numbers for barycentric coordinates ---
-    u1, u2 = np.random.uniform(size=2)
-
-    # --- Sample a point uniformly within the triangle using Kraemer's method ---
-    # This ensures a statistically uniform distribution of points.
-    point_on_triangle = (1 - np.sqrt(u1)) * v0 + \
-                        (np.sqrt(u1) * (1 - u2)) * v1 + \
-                        (np.sqrt(u1) * u2) * v2
-
-    # --- Add Gaussian measurement noise ---
-    noise = np.random.normal(scale=sigma_v, size=2)
-    return point_on_triangle + noise
+def _sample_measurements_on_triangles(v0: np.ndarray, v1: np.ndarray, v2: np.ndarray, sigma_v: float):
+    """Sample one noisy point in each triangle using Kraemer's barycentric map."""
+    if v0.shape[0] == 0:
+        return np.empty((0, 2))
+    u1 = np.random.uniform(size=v0.shape[0])
+    u2 = np.random.uniform(size=v0.shape[0])
+    root = np.sqrt(u1)
+    points = (
+        (1.0 - root)[:, None] * v0
+        + (root * (1.0 - u2))[:, None] * v1
+        + (root * u2)[:, None] * v2
+    )
+    return points + np.random.normal(scale=sigma_v, size=points.shape)
 
 # ==============================================================================
 # SECTION 5: CENTER DETECTION GENERATION FUNCTIONS
 # ==============================================================================
 
-def _generate_detections_on_center(extended_object_pose: np.ndarray, extended_object_id: int, 
-                                   sensor: Sensor, extended_object_shape: dict, 
-                                   dropout_status: float, use_los: bool, use_oor: bool):
-    """Generates a single point detection on an extended object's center."""
+def _generate_detections_on_center(extended_object_pose: np.ndarray, extended_object_id: int,
+                                   sensor: Sensor, extended_object_shape: dict,
+                                   dropout_status: float, use_oor: bool):
+    """Generates a single point detection on an extended object's center.
+
+    Line-of-sight is not applied: only contour mode consults ``LoSTable``.
+    """
     # --- Unpack Shape Info and Compute Center of Geometry ---
     contourShapeMatrix  = extended_object_shape['contourShapeMatrix']
     edge_starts_local   = contourShapeMatrix[:2, :].T
@@ -537,6 +574,16 @@ def _generate_detections_on_center(extended_object_pose: np.ndarray, extended_ob
 # ==============================================================================
 # SECTION 6: HELPER FUNCTIONS
 # ==============================================================================
+
+def _fill_isolated_nans(track: np.ndarray) -> np.ndarray:
+    """Fill gaps of exactly one NaN with the mean of the two neighboring samples."""
+    if track.shape[1] < 3:
+        return track
+    left = track[:, :-2]
+    right = track[:, 2:]
+    fillable = np.isnan(track[:, 1:-1]) & ~np.isnan(left) & ~np.isnan(right)
+    track[:, 1:-1] = np.where(fillable, 0.5 * (left + right), track[:, 1:-1])
+    return track
 
 def _roto_translate(points, pose, inverse = False):
     """Applies a 2D roto-translation to a set of points."""

@@ -111,7 +111,7 @@ def contourShapeMatrixGenerator(foldedVertices):
     d                   = np.sqrt((S4[2] - S4[0])**2 + (S4[3] - S4[1])**2)                      # Calculate the length of each edge
     return np.vstack((S4, d))                                                                   # Stack the edge lengths to create the final 5xN matrix
 
-def contourShapeMatrixGenerator(contourShapeMatrix: np.ndarray) -> np.ndarray:
+def surfaceShapeMatrixGenerator(contourShapeMatrix: np.ndarray) -> np.ndarray:
     """Converts an edge-based contour matrix into a triangle-based surface matrix."""
     vertices = contourShapeMatrix[:2, :].T                                                      # Extract the unique vertices from the contour matrix   
     if vertices.shape[0] < 3: return np.empty((7, 0))                                           # Return empty if less than 3 vertices (no surface possible)
@@ -195,33 +195,58 @@ def compute_edge_LoS_flag(sensor_pos, edge_idx, contourShapeMatrix):
             return 0                                                                            # If blocked, return a visibility flag of 0
     return 1                                                                                    # If no intersections are found, the edge is visible; return 1
 
+def compute_los_flags_for_points(sensor_positions, contour_xy, chunk_size = 128):
+    """Visibility flags for many sensor positions, matching ``compute_edge_LoS_flag``.
+
+    ``sensor_positions`` has shape ``(P, 2)`` and ``contour_xy`` is the ``4 x E``
+    edge matrix. A flag is 1 when the segment from the sensor to the edge midpoint
+    does not intersect any other edge. Parallel segments are treated as no hit.
+    """
+    sensor_positions = np.atleast_2d(np.asarray(sensor_positions, dtype = float))
+    starts           = np.asarray(contour_xy[:2], dtype = float).T
+    ends             = np.asarray(contour_xy[2:4], dtype = float).T
+    centers          = (starts + ends) / 2.0
+    blockers         = ends - starts
+    n_edges          = starts.shape[0]
+    flags            = np.empty((sensor_positions.shape[0], n_edges), dtype = np.uint8)
+    diagonal         = np.arange(n_edges)
+
+    for i0 in range(0, sensor_positions.shape[0], chunk_size):
+        sensors = sensor_positions[i0:i0 + chunk_size]
+        rays = centers[None, :, :] - sensors[:, None, :]
+        cross = (rays[:, :, None, 0] * blockers[None, None, :, 1]
+                 - rays[:, :, None, 1] * blockers[None, None, :, 0])
+        offset = starts[None, :, :] - sensors[:, None, :]
+        offset_cross_blockers = offset[:, :, 0] * blockers[:, 1] - offset[:, :, 1] * blockers[:, 0]
+        offset_cross_rays = (offset[:, None, :, 0] * rays[:, :, None, 1]
+                             - offset[:, None, :, 1] * rays[:, :, None, 0])
+        with np.errstate(divide = 'ignore', invalid = 'ignore'):
+            t = offset_cross_blockers[:, None, :] / cross
+            u = offset_cross_rays / cross
+        hit = (cross != 0.0) & (t >= 0.0) & (t <= 1.0) & (u >= 0.0) & (u <= 1.0)
+        hit[:, diagonal, diagonal] = False
+        flags[i0:i0 + sensors.shape[0]] = (~hit.any(axis = 2)).astype(np.uint8)
+
+    return flags
+
 def compute_all_LoS_flags(sensor_position, extended_object_contourShapeMatrix):
     """Computes visibility flags for all edges of an extended object from a given point."""
-    n_edges = extended_object_contourShapeMatrix.shape[1]                                       # Get the total number of edges
-    flags   = np.zeros(n_edges, dtype=int)                                                      # Initialize an array of flags, one for each edge
-    for i in range(n_edges):                                                                    # Iterate through each edge
-        flags[i] = compute_edge_LoS_flag(sensor_position, i, 
-                                         extended_object_contourShapeMatrix)                    # Compute the visibility flag for the current edge and store it
-    return flags                                                                                # Return the complete array of visibility flags
+    point = np.asarray(sensor_position, dtype = float).reshape(1, 2)
+    return compute_los_flags_for_points(point, extended_object_contourShapeMatrix[:4, :])[0].astype(int)
 
 def generate_visibility_table(contourShapeMatrix, visibilityParameters):
     """Generates a lookup table for Line-of-Sight (LoS) visibility."""
     grid_points_flat = _generate_grid_points(visibilityParameters)                              # Generate the grid of points around the extended object
     n_points         = grid_points_flat.shape[0]                                                # Get the total number of grid points
     nEdges           = contourShapeMatrix.shape[1]                                              # Get the number of edges in the extended object shape
+    print(f"  Generating LoS table for {n_points} grid points and {nEdges} edges...")
+    flags = compute_los_flags_for_points(grid_points_flat, contourShapeMatrix[:4, :])
 
-    LoSTable = {                                                                                # Initialize the LoSTable dictionary structure
-        'coords' : grid_points_flat,                                                            # To store the flat array of grid point coordinates
-        'flags'  : np.zeros((n_points, nEdges), dtype = np.uint8),                              # To store visibility flags for each point and edge
-        'meta'   : {**visibilityParameters, 'totalGridPoints': n_points}                        # To store the generation parameters + grid point count 
+    return {                                                                                    # LoSTable dictionary
+        'coords' : grid_points_flat,                                                            # Flat array of grid point coordinates
+        'flags'  : flags,                                                                       # Visibility flags for each point and edge
+        'meta'   : {**visibilityParameters, 'totalGridPoints': n_points}                        # Generation parameters and grid point count
     }
-
-    for i in tqdm(range(n_points), desc = "  Generating LoS table", leave = False):             # Iterate through each grid point with a progress bar
-        currentPoint             = grid_points_flat[i]                                          # Get the coordinates of the current grid point
-        LoSTable['flags'][i, :]  = compute_all_LoS_flags(currentPoint, 
-                                                         contourShapeMatrix[:4, :])             # Compute and store visibility flags for all edges from this point
-
-    return LoSTable                                                                             # Return the completed LoS table
 
 # ==============================================================================
 # SECTION 3: TRIANGULATION VALIDATION
@@ -490,7 +515,7 @@ if __name__ == "__main__":
             with h5py.File(H5_INPUT_PATH, 'r') as f:                                            # Open the HDF5 file for reading
                 for key in tqdm(list(f.keys()), desc='Generating Shape Matrices'):              # Iterate through each extended object shape in the file
                     csm   = contourShapeMatrixGenerator(f[key]["foldedVertices"][:])            # Generate the contour matrix first
-                    ssm   = contourShapeMatrixGenerator(csm)                                    # Now generate the surface matrix from the contour matrix
+                    ssm   = surfaceShapeMatrixGenerator(csm)                                    # Triangulate the contour into the surface matrix
                     entry = {                                                                   # Create a dictionary for the current shape
                         'fullName'           : str(f[key].attrs.get("name", "Unknown")),        # Get the full name from HDF5 attributes
                         'shortName'          : str(f[key].attrs.get("id", "N/A")),              # Get the short name/ID from HDF5 attributes

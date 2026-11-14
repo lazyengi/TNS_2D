@@ -50,7 +50,7 @@ La griglia comune parte dal minimo `raw_time` e arriva al minimo tra `max_durati
 time_grid = arange(t_start, final_t_end + global_dt, global_dt)
 ```
 
-Ogni traccia valida è depositata sull’indice `searchsorted(time_grid, t, side='left')`. Se più campioni grezzi cadono nello stesso bin, resta il primo. I buchi di un solo `NaN` sono interpolati in lineare con pandas (`limit = 1`); i buchi più lunghi restano `NaN` e l’oggetto risulta assente. Dopo l’interpolazione la prua è di nuovo avvolta in `[-π, π)`.
+Ogni traccia valida è depositata sull’indice `searchsorted(time_grid, t, side='left')`. Se più campioni grezzi cadono nello stesso bin, resta il primo. Un buco di un solo `NaN` fra due campioni validi è riempito con la loro media; i buchi più lunghi restano `NaN` e l’oggetto risulta assente. Dopo l’interpolazione la prua è di nuovo avvolta in `[-π, π)`.
 
 `aligned_track` ha forma `(4, K)` con `K = len(time_grid)`. Le righe sono `x`, `y`, prua, velocità.
 
@@ -186,6 +186,8 @@ Su ogni anello i punti sono spaziati in arco di circa `r_min · angleResolution`
 
 In simulazione la posa del sensore è portata nel frame dell’oggetto e si prende la riga di `flags` del punto di griglia più vicino in norma euclidea. La tabella è quindi una quantizzazione della direzione e della distanza di osservazione, calcolata una volta per sagoma.
 
+Il riempimento della tabella è `compute_los_flags_for_points`: lo stesso test di intersezione del ciclo per spigolo, eseguito a blocchi di punti. Un `generation_mode` fuori da `contour`, `surface` e `center` solleva `ValueError` prima di produrre misure.
+
 ### Da HDF5 a matrici
 
 `foldedVertices` è una metà della pianta, simmetrica rispetto all’asse longitudinale. `unfold` specchia la coordinata trasversale, `circularClip` chiude gli spigoli, `shapeVector` scrive le coordinate di inizio e fine, l’ultima riga è la lunghezza.
@@ -196,15 +198,15 @@ Il sorgente HDF5 non va modificato a mano se si vuole restare compatibili con `g
 
 ## Dataset di classificazione
 
-`generate_dataset.py` non è un secondo motore. Per ogni esempio costruisce un `ExtendedObject` fermo (`initial_speed = 0`, comandi nulli), un `Sensor` in modalità `contour` con portata 0–1000 m e bearing `[-π, π]`, clutter nullo, `pd = 1`, `alpha = None`, e un `Simulator` con `use_dropouts = False` e `use_oor = False`. Il passo `DELTA_T = 1e-6` s serve solo a ottenere uno snapshot.
+`generate_dataset.py` non integra una traiettoria. Per ogni esempio chiama `sample_contour_cloud`: la stessa funzione che il simulatore usa in modalità `contour`, con sensore nell’origine, senza campo di vista e senza dropout. La posa è casuale (angolo uniforme, prua uniforme, distanza fissa oppure raggio uniforme in area sull’anello). Non c’è un quadrato di volo, quindi un raggio oltre 60 m resta una misura valida.
 
-La posa è casuale: angolo uniforme, prua uniforme, distanza fissa oppure raggio uniforme in area sull’anello. La nuvola della prima misura, se esiste, è trasformata nel frame dell’oggetto con la rototraslazione inversa quando `USE_EXTENDED_OBJECT_COORDINATES` è vero. In quel frame la sagoma resta quella della libreria e l’informazione di posa sopravvive solo in `sensor_pos_eoc`.
+La nuvola, se non è vuota, è trasformata nel frame dell’oggetto con la rototraslazione inversa quando `USE_EXTENDED_OBJECT_COORDINATES` è vero. In quel frame la sagoma resta quella della libreria e l’informazione di posa sopravvive solo in `sensor_pos_eoc`.
 
-Il pickle è `{"metadata": {...}, "data": [esempio, ...]}`. I nomi dei campi della copia in `output/` sono quelli della revisione precedente; il contratto dello script attuale è descritto nel README.
+Il pickle è `{"metadata": {...}, "data": [esempio, ...]}`. Lo script attuale scrive `metadata['schema_version'] = 2`. La copia in `output/` è lo schema precedente, senza quel campo; la validazione accetta anche `sensor_pos_ac` e `use_aircraft_coordinates`.
 
 ## Renderer
 
-`render_animation` è una `FuncAnimation` di Matplotlib salvata con `FFMpegWriter` (`libx264`, pixel format `yuv444p`, `-crf 0`, preset `veryslow`).
+`render_animation` è una `FuncAnimation` di Matplotlib salvata con `FFMpegWriter` (`libx264`). Crf, preset e pixel format arrivano da `ENCODER_CRF`, `ENCODER_PRESET` e `ENCODER_PIX_FMT`. Se mancano, il motore usa un’anteprima: crf 18, `veryfast`, `yuv420p`. L’archivio lossless è crf 0, `veryslow`, `yuv444p`.
 
 Preparazione, una tantum:
 

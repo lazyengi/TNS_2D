@@ -1,6 +1,6 @@
 numpy
-pandas
 matplotlib
 tqdm
 h5py
 triangle
+PyYAML

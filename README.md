@@ -13,7 +13,7 @@ Non è un pacchetto installabile. Gli script aggiungono la radice del repository
 ## Requisiti
 
 - Python 3.12
-- I pacchetti in [`requirements.txt`](requirements.txt): NumPy, pandas, Matplotlib, tqdm, h5py, `triangle` (triangolazione di Shewchuk)
+- I pacchetti in [`requirements.txt`](requirements.txt): NumPy, Matplotlib, tqdm, h5py, `triangle` (triangolazione di Shewchuk)
 - [FFmpeg](https://ffmpeg.org/) sul `PATH`, solo per il video. Il renderer usa `FFMpegWriter` con codec `libx264`.
 
 ```powershell
@@ -65,7 +65,7 @@ I tre sensori stanno su una circonferenza di raggio `0.98 * SPINE_LENGTH`, hanno
 python scripts/run_simulation.py
 ```
 
-Il video finisce in `output/simulation_output.mp4`. Il rendering a 60 fps e 120 dpi con preset `veryslow` è lento: è una codifica lossless (`-crf 0`), non un’anteprima.
+Il video finisce in `output/simulation_output.mp4`. Lo scenario di esempio codifica un’anteprima (`ENCODER_CRF` 18, preset `veryfast`, `yuv420p`). Per un archivio lossless si rimettono `ENCODER_CRF` a 0, `ENCODER_PRESET` a `veryslow` e `ENCODER_PIX_FMT` a `yuv444p`: quel preset è molto più lento.
 
 Per cambiare lo scenario si editano, nello stesso script, i dizionari `extended_object_definitions`, `sensor_definitions`, `simulation_config` e `rendering_config`. I nomi dei campi coincidono con i costruttori di `ExtendedObject`, `Sensor` e `Simulator`.
 
@@ -110,11 +110,11 @@ Per cambiare lo scenario si editano, nello stesso script, i dizionari `extended_
 | Flag | Effetto se vero |
 |---|---|
 | `use_dropouts` | Applica Bernoulli o Markov. Se falso, ogni scansione è attiva |
-| `use_los` | Applica l’occlusione propria. Ha effetto solo in modalità `contour` |
+| `use_los` | Applica l’occlusione propria, solo se `generation_mode` è `contour`. Lo scenario di esempio usa `center`, quindi il flag è `False` |
 | `use_oor` | Scarta la geometria fuori dal campo di vista |
 | `verbose` | Stampa i tre passi della pipeline |
 
-`spine_length` è la semi-lunghezza del quadrato di volo: un punto con `|x|` o `|y|` maggiori esce di scena. `max_duration` tronca la simulazione anche se gli oggetti sono ancora dentro.
+`spine_length` è la semi-lunghezza del quadrato di volo: un punto con `|x|` o `|y|` maggiori esce di scena. `max_duration` tronca la simulazione anche se gli oggetti sono ancora dentro. Un `generation_mode` diverso da `contour`, `surface` e `center` interrompe l’esecuzione con `ValueError`.
 
 ### Configurazione del video
 
@@ -127,12 +127,13 @@ Per cambiare lo scenario si editano, nello stesso script, i dizionari `extended_
 | `clutter_color_override` | Colore unico del clutter; `None` usa il colore del sensore |
 | `MP4_PATH`, `DURATION_S`, `SPINE_LENGTH` | Destinazione, durata e scala degli assi |
 | `FIGSIZE`, `DPI`, `FPS` | Figura Matplotlib e cadenza del filmato |
+| `ENCODER_CRF`, `ENCODER_PRESET`, `ENCODER_PIX_FMT` | Qualità dell’MP4. Default del motore: 18, `veryfast`, `yuv420p` |
 
 Nel filmato i quadratini sono rilevazioni vere, i punti piccoli sono clutter. Le nuvole svaniscono in 1,5 s. Il cuneo è il campo di vista.
 
 ## Dataset di classificazione
 
-`utils/generate_dataset.py` produce esempi indipendenti: un solo oggetto fermo, un sensore nell’origine in modalità `contour`, una sola scansione. La classe è `shape_idx`.
+`utils/generate_dataset.py` produce esempi indipendenti: un solo oggetto fermo, sensore nell’origine, una nuvola di contorno. La classe è `shape_idx`. Il campionamento passa da `sample_contour_cloud` e non avvia il simulatore dinamico, quindi la distanza casuale non viene tagliata dal quadrato di volo.
 
 Parametri in cima al file:
 
@@ -151,11 +152,9 @@ Parametri in cima al file:
 python utils/generate_dataset.py
 ```
 
-Con un milione di esempi il file è dell’ordine del gigabyte e la validazione è interattiva. Per una prova, abbassa `NUM_EXAMPLES` e metti `VALIDATE_AFTER_GENERATION = False`.
+Con un milione di esempi il file è dell’ordine del gigabyte e la validazione è interattiva. Per una prova, abbassa `NUM_EXAMPLES` e metti `VALIDATE_AFTER_GENERATION = False`. Su questa macchina 200 snapshot stanno in circa 0,07 s: il tempo di un milione di esempi è dominato dalla scrittura del pickle, non dal simulatore.
 
-`USE_RANDOM_DISTANCE = True` con i default attuali mette l’oggetto fino a 100 m dall’origine, mentre il `Simulator` interno usa `spine_length = 60`. Oltre 60 m la traccia è azzerata e l’esempio viene scartato. Per usare l’anello intero, `spine_length` in `generate_single_example` deve coprire `2 * POSE_DISTANCE`.
-
-Un esempio fallito (nessun punto misurato) viene scartato: `len(data)` può essere minore di `num_examples`.
+Un esempio senza punti viene scartato: `len(data)` può essere minore di `num_examples`.
 
 ### File già presente in `output/full_dataset.pkl`
 
@@ -170,11 +169,13 @@ full["metadata"]["use_aircraft_coordinates"]  # True
 full["data"][0].keys()  # point_cloud, shape_idx, sensor_pos_ac
 ```
 
-| | Pickle in repository | Script attuale |
+| | Pickle in repository (schema 1, senza versione) | Script attuale (`schema_version` 2) |
 |---|---|---|
 | Esempi | 100 000 | `NUM_EXAMPLES = 1_000_000` |
 | Flag coordinate | `use_aircraft_coordinates` | `use_extended_object_coordinates` |
 | Posa del sensore nel frame oggetto | `sensor_pos_ac` | `sensor_pos_eoc` |
+
+`validate_dataset` legge entrambi i nomi. I file nuovi portano `metadata['schema_version'] = 2`.
 
 Geometria e rumore coincidono con i default attuali: distanza fissa 50 m, risoluzione 2 m⁻¹, rumore 0.1 m, linea di vista attiva, coordinate dell’oggetto. `point_cloud` è un array `(N, 2)`.
 
@@ -236,9 +237,9 @@ entry["LoSTable"]["flags"]    # (3939, n_spigoli), uint8
 
 `utils/generate_shape_library.py` legge `data/raw_aircraft_shape_library.h5` e scrive `data/aircraft_shape_library.pkl`. Ogni gruppo HDF5 ha il dataset `foldedVertices` (metà sagoma, simmetrica rispetto all’asse x) e gli attributi `name` e `id`.
 
-Nel file ci sono due funzioni con lo **stesso nome** `contourShapeMatrixGenerator`. La seconda, quella che costruisce la superficie, sostituisce la prima. La chiamata che dovrebbe costruire il contorno dai vertici piegati esegue quindi la triangolazione e il generatore, così com’è, non ricostruisce la libreria. Per ripristinarlo la seconda definizione va rinominata (il ruolo è quello di `surfaceShapeMatrixGenerator`) e la seconda chiamata nel `main` va aggiornata di conseguenza.
+Il contorno è `contourShapeMatrixGenerator`; la triangolazione è `surfaceShapeMatrixGenerator`. Le tabelle di linea di vista usano lo stesso test segmento-segmento di prima, calcolato a blocchi su tutti i punti di griglia.
 
-Anche a funzione sistemata, i flag in cima al file sono tutti `True`, incluso `FORCE_REGENERATION`. L’esecuzione ricalcola le tabelle di linea di vista (migliaia di punti per sagoma) e apre finestre Matplotlib che avanzano con un tasto. Per il solo ricalcolo senza plot: `RUN_TRIANGULATION_VALIDATION`, `RUN_GRID_VALIDATION`, `RUN_PERFORMANCE_VALIDATION` e `RUN_VISUAL_VALIDATION` a `False`.
+I flag in cima al file sono tutti `True`, incluso `FORCE_REGENERATION`. L’esecuzione ricalcola le tabelle e apre finestre Matplotlib che avanzano con un tasto. Per il solo ricalcolo senza plot: `RUN_TRIANGULATION_VALIDATION`, `RUN_GRID_VALIDATION`, `RUN_PERFORMANCE_VALIDATION` e `RUN_VISUAL_VALIDATION` a `False`.
 
 `test.py` non è una suite automatica. Va lanciato dalla radice del repository, carica `data/shape_library.pkl`, triangola una sagoma a caso e la disegna.
 
